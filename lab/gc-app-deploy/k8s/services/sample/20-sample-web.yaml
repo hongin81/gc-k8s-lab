@@ -41,6 +41,9 @@ spec:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
+          lifecycle:                                # 내려가기 전 5초 대기 — 입구(Traefik)가 이 파드를 목록에서 뺄 시간 (배포 중 순간 502 방지)
+            preStop:
+              exec: { command: [sleep, "5"] }
           readinessProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 5

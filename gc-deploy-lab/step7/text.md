@@ -41,10 +41,11 @@ sed -i "/name: docker.io\/lab\/sample-web/{n;s/newTag: .*/newTag: $TAG/}" k8s/se
 kubectl diff -k k8s/services/sample | grep -E '^[-+] .*image:'
 kubectl apply -k k8s/services/sample
 kubectl -n sample rollout status deploy/sample-web --timeout=3m
+sleep 5   # 입구가 새 파드로 목록을 바꾸는 데 몇 초 걸림
 curl -sk https://ai.lab.example/sample/ | grep -o '버전 v[0-9]' | head -1
 ```{{exec}}
 
-`버전 v2` 가 나오면 새 버전이 나간 것입니다.
+`버전 v2` 가 나오면 새 버전이 나간 것입니다. 기존 파드는 바로 꺼지지 않고 5초 기다렸다가 내려가서(설정 파일의 `preStop`) 바꾸는 동안 요청이 끊기지 않습니다.
 
 ### ⑤ 이력 보기 · 직전 버전으로 되돌리기
 
@@ -52,6 +53,7 @@ curl -sk https://ai.lab.example/sample/ | grep -o '버전 v[0-9]' | head -1
 kubectl -n sample rollout history deploy/sample-web
 kubectl -n sample rollout undo deploy/sample-web
 kubectl -n sample rollout status deploy/sample-web --timeout=3m
+sleep 5
 curl -sk https://ai.lab.example/sample/ | grep -o '버전 v[0-9]' | head -1
 ```{{exec}}
 
