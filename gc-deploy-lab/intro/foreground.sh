@@ -15,5 +15,6 @@ if grep -q '^ok' /root/.gc-lab-status; then
   echo "연습장 준비 완료 — 왼쪽 START 를 누르세요."
 else
   echo "준비에 실패했습니다: $(cat /root/.gc-lab-status)"
-  echo "기록 보기: tail -30 /root/gc-lab-setup.log"
+  echo "---- 준비 기록 마지막 부분 (이 화면을 캡처해서 보내 주세요) ----"
+  tail -20 /root/gc-lab-setup.log
 fi

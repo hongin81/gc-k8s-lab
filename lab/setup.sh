@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 연습장 준비 — GC 인프라 담당의 "선행 작업"(가이드 11장)을 작게 흉내 낸다.
-#   1) 클러스터  2) 이미지 창고(infra01:5000) + 노드가 docker.io 요청을 창고로 돌리게(미러)
-#   3) 창고 시험  4) 서버 라벨  5) 입구(Traefik) · 공통 DB · DB 비밀번호 파일
-#   6) 도메인 · 인증서  7) 빌드 도구  8) 작업 폴더
+#   1) 클러스터  2) 이미지 창고(infra01:5000)  3) 노드가 docker.io 요청을 창고로 돌리게(미러)
+#   4) 창고 시험  5) 서버 라벨  6) 입구(Traefik) · 공통 DB · DB 비밀번호 파일
+#   7) 도메인 · 인증서  8) 빌드 도구  9) 작업 폴더
 # 사용:
 #   킬러코다: 자동 실행 (gc-deploy-lab/intro/background.sh)
 #   내 PC(리눅스 · WSL2, x86_64, 도커 필요): sudo bash lab/setup.sh --mode kind
@@ -24,7 +24,16 @@ KIND_VERSION=v0.32.0
 TMP=$(mktemp -d)
 
 step() { echo; echo "== $*"; }
-die()  { echo "준비 실패: $*"; echo "fail: $*" > "$STATUS"; exit 1; }
+diag() {
+  echo "---- 진단 ----"
+  systemctl is-active docker containerd 2>&1 | paste -sd' ' | sed 's/^/  docker · containerd 상태: /'
+  docker info 2>&1 | grep -iE "server version|error|cannot" | head -3 | sed 's/^/  /'
+  docker ps -a 2>&1 | head -4 | sed 's/^/  /'
+  ss -ltnp 2>/dev/null | grep -E ":(5000|80|443) " | sed 's/^/  포트 사용 중: /'
+  df -h / 2>/dev/null | tail -1 | sed 's/^/  디스크: /'
+  free -m 2>/dev/null | awk '/Mem/{print "  메모리(MB): 전체 "$2" · 남음 "$7}'
+}
+die()  { echo "준비 실패: $*"; diag; echo "fail: $*" > "$STATUS"; exit 1; }
 retry() { local n=$1 i; shift; for i in $(seq 1 "$n"); do "$@" && return 0; sleep 5; done; return 1; }
 
 # 노드에서 명령 실행 / 노드에 파일 넣기 (킬러코다: ssh, kind: docker exec)
@@ -42,6 +51,28 @@ node_put() {
   else scp -q -o StrictHostKeyChecking=no "$src" "$n:$dst"; fi
 }
 
+# 이미지 창고(registry) 띄우기 — 도커로 몇 번 시도, 안 되면 podman 으로
+start_registry() {
+  local i bind=0.0.0.0 net=()
+  if [ "$MODE" = kind ]; then bind=127.0.0.1; net=(--network kind); fi
+  curl -sf http://localhost:5000/v2/ >/dev/null 2>&1 && return 0
+  for i in 1 2 3 4 5 6; do
+    docker rm -f infra01 >/dev/null 2>&1
+    docker run -d --restart=always --name infra01 "${net[@]}" -p "$bind:5000:5000" "$ECR/registry:2" >/dev/null \
+      && retry 6 curl -sf http://localhost:5000/v2/ >/dev/null && return 0
+    echo "  도커로 창고 시작 실패 ($i/6) — 10초 뒤 다시"
+    sleep 10
+  done
+  if [ "$MODE" = killercoda ] && command -v podman >/dev/null; then
+    echo "  podman 으로 창고 시작"
+    docker rm -f infra01 >/dev/null 2>&1
+    podman rm -f infra01 >/dev/null 2>&1
+    podman run -d --restart=always --name infra01 -p 5000:5000 "$ECR/registry:2" >/dev/null \
+      && retry 6 curl -sf http://localhost:5000/v2/ >/dev/null && return 0
+  fi
+  return 1
+}
+
 rm -f "$STATUS"
 [ "$(id -u)" = 0 ] || die "root 로 실행해야 합니다 (sudo bash lab/setup.sh)"
 echo "연습장 준비 시작 — 방식: $MODE · 폴더: $LAB_DIR"
@@ -50,6 +81,7 @@ echo "연습장 준비 시작 — 방식: $MODE · 폴더: $LAB_DIR"
 if [ "$MODE" = killercoda ]; then
   step "1. 클러스터 확인 (관리 서버 controlplane + 업무 서버 node01)"
   retry 60 kubectl get nodes >/dev/null 2>&1 || die "쿠버 API 가 응답하지 않음"
+  systemctl is-active --quiet docker || systemctl start docker || echo "  도커를 켜지 못함"
 else
   step "1. 클러스터 만들기 (kind: 관리 서버 1 + 업무 서버 2)"
   command -v docker >/dev/null || die "도커가 필요합니다"
@@ -86,8 +118,12 @@ APP_NODES=$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o jso
 if [ "$MODE" = kind ]; then VIP=127.0.0.1; else VIP=$CP_IP; fi
 echo "  노드: $NODES · 관리 서버: $CP ($CP_IP) · 업무 서버: $APP_NODES"
 
-# ── 2. 이미지 창고 연결 (미러) ──────────────────────────────────
-step "2. 노드가 docker.io 요청을 이미지 창고(infra01:5000)로 받게 설정"
+# ── 2. 이미지 창고 ────────────────────────────────────────────
+step "2. 이미지 창고 (infra01 역할, 포트 5000) 시작"
+start_registry || die "이미지 창고 시작 실패"
+
+# ── 3. 이미지 창고 연결 (미러) ──────────────────────────────────
+step "3. 노드가 docker.io 요청을 이미지 창고(infra01:5000)로 받게 설정"
 cat > "$TMP/hosts.toml" <<'EOF'
 server = "https://registry-1.docker.io"
 
@@ -122,17 +158,10 @@ for n in $NODES; do
 done
 kubectl wait --for=condition=Ready nodes --all --timeout=180s >/dev/null || die "containerd 재시작 뒤 노드가 Ready 가 아님"
 
-# ── 3. 이미지 창고 + 시험 ──────────────────────────────────────
-step "3. 이미지 창고 (infra01 역할, 포트 5000) 시작 · 시험"
-if ! docker ps --format '{{.Names}}' | grep -qx infra01; then
-  docker rm -f infra01 >/dev/null 2>&1
-  if [ "$MODE" = kind ]; then
-    docker run -d --restart=always --name infra01 --network kind -p 127.0.0.1:5000:5000 "$ECR/registry:2" >/dev/null
-  else
-    docker run -d --restart=always --name infra01 -p 5000:5000 "$ECR/registry:2" >/dev/null
-  fi || die "이미지 창고 시작 실패"
-fi
-retry 20 curl -sf http://localhost:5000/v2/ >/dev/null || die "이미지 창고가 응답하지 않음"
+# ── 4. 창고 시험 ─────────────────────────────────────────────
+step "4. 창고 시험 — 시험용 이미지를 넣고 모든 노드가 docker.io 이름으로 받는지"
+start_registry || die "containerd 재시작 뒤 이미지 창고가 응답하지 않음"
+retry 6 docker info >/dev/null 2>&1 || die "도커가 응답하지 않음"
 docker pull -q "$ECR/busybox:1.36" >/dev/null \
   && docker tag "$ECR/busybox:1.36" localhost:5000/lab/lab-check:1 \
   && docker push localhost:5000/lab/lab-check:1 >/dev/null || die "시험 이미지 넣기 실패"
@@ -142,13 +171,13 @@ for n in $NODES; do
   echo "  $n: docker.io/lab/lab-check:1 → 창고에서 받기 정상"
 done
 
-# ── 4. 서버 라벨 ──────────────────────────────────────────────
-step "4. 서버 라벨 — 업무 서버 = lab.io/role=app"
+# ── 5. 서버 라벨 ──────────────────────────────────────────────
+step "5. 서버 라벨 — 업무 서버 = lab.io/role=app"
 for n in $APP_NODES; do kubectl label node "$n" lab.io/role=app --overwrite >/dev/null; done
 kubectl get nodes -L lab.io/role
 
-# ── 5. 입구 · 공통 DB ─────────────────────────────────────────
-step "5. 입구(Traefik) · 공통 DB · DB 비밀번호 파일"
+# ── 6. 입구 · 공통 DB ─────────────────────────────────────────
+step "6. 입구(Traefik) · 공통 DB · DB 비밀번호 파일"
 kubectl apply -f "$LAB_DIR/lab/infra/traefik.yaml" >/dev/null || die "Traefik 설치 실패"
 kubectl create namespace data-db --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 if kubectl -n data-db get secret db-general-sample >/dev/null 2>&1; then
@@ -169,8 +198,8 @@ chmod 600 /root/db-sample.txt
 kubectl -n traefik rollout status deploy/traefik --timeout=300s >/dev/null || die "Traefik 이 뜨지 않음"
 kubectl -n data-db rollout status deploy/db-general --timeout=300s >/dev/null || die "DB 가 뜨지 않음"
 
-# ── 6. 도메인 · 인증서 ───────────────────────────────────────
-step "6. 도메인 $DOMAIN → 입구 $VIP · 연습용 인증서"
+# ── 7. 도메인 · 인증서 ───────────────────────────────────────
+step "7. 도메인 $DOMAIN → 입구 $VIP · 연습용 인증서"
 grep -q " $DOMAIN\$" /etc/hosts || echo "$VIP $DOMAIN" >> /etc/hosts
 mkdir -p /root/lab-certs
 if [ ! -f "/root/lab-certs/$DOMAIN.crt" ]; then
@@ -182,8 +211,8 @@ retry 24 bash -c "curl -sk -o /dev/null -w '%{http_code}' https://$DOMAIN/ | gre
   || die "입구(Traefik)가 443 에서 응답하지 않음"
 echo "  https://$DOMAIN/ → 404 (아직 경로 없음 = 입구 정상)"
 
-# ── 7. 빌드 도구 (인터넷 PC 역할) ─────────────────────────────
-step "7. 빌드 도구 — docker buildx · mvn · podman"
+# ── 8. 빌드 도구 (인터넷 PC 역할) ─────────────────────────────
+step "8. 빌드 도구 — docker buildx · mvn · podman"
 if ! docker buildx version >/dev/null 2>&1; then
   apt-get update -qq >/dev/null 2>&1
   apt-get install -y -qq docker-buildx >/dev/null 2>&1 || apt-get install -y -qq docker-buildx-plugin >/dev/null 2>&1
@@ -203,8 +232,8 @@ docker pull -q "$ECR/nginx:1.27-alpine" >/dev/null
 command -v podman >/dev/null || echo "  podman 없음 — 적재 스크립트가 docker 로 대신합니다"
 command -v shasum >/dev/null || die "shasum 이 없음"
 
-# ── 8. 작업 폴더 ──────────────────────────────────────────────
-step "8. 작업 폴더"
+# ── 9. 작업 폴더 ──────────────────────────────────────────────
+step "9. 작업 폴더"
 git config --global user.name lab
 git config --global user.email lab@example.com
 git config --global --add safe.directory '*'
