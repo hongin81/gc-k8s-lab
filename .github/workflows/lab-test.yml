@@ -19,6 +19,9 @@ jobs:
       - name: 단계별 실행 상자 그대로 실행 + CHECK
         run: sudo python3 ci/run-steps.py gc-deploy-lab
 
+      - name: 배포 묶음 점검 시험 (정상 묶음 · 일부러 틀린 묶음 9가지)
+        run: sudo bash ci/test-bundle-check.sh
+
       - name: 현장 키트 시험 (점검 스크립트 · 첫 배포 꾸러미)
         run: sudo bash ci/test-site-kit.sh
 
