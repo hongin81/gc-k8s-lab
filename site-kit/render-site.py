@@ -58,8 +58,14 @@ for f in svc_out.glob("*.yaml"):
         t = t.replace("newTag: CHANGE-ME", f"newTag: {tag}")
     f.write_text(t, encoding="utf-8")
 
-# check-service.sh 기본 도메인을 현장 값으로
+# check-service.sh 기본 도메인 · 입구 주소를 현장 값으로 (작업 서버에서는 도메인이 DNS 로 안 풀릴 수 있음)
 cs = out_dir / "scripts" / "check-service.sh"
-cs.write_text(cs.read_text(encoding="utf-8").replace("ai.lab.example", domain), encoding="utf-8")
+t = cs.read_text(encoding="utf-8").replace("ai.lab.example", domain)
+vip = env.get("INGRESS_VIP", "")
+if vip:
+    old_vip = """VIP=${VIP:-$(getent hosts "$DOMAIN" | awk '{print $1; exit}')}"""
+    assert old_vip in t
+    t = t.replace(old_vip, "VIP=${VIP:-" + vip + "}")
+cs.write_text(t, encoding="utf-8")
 
 print(f"내보냄: {out_dir}  (태그 {tag})")
