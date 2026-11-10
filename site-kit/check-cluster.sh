@@ -56,6 +56,9 @@ sec 1 "쿠버 연결"
 ver=$(k get --raw /version | grep -o '"gitVersion": *"[^"]*"' | cut -d'"' -f4)
 if [ -n "$ver" ]; then
   ok "쿠버 API 응답 · 버전 $ver"
+  py=$(python3 --version 2>&1)
+  if command -v python3 >/dev/null; then info "$py — 배포 묶음 점검(check-bundle.py) 실행 가능"
+  else info "python3 없음 — 배포 묶음 점검(check-bundle.py)은 python3 가 있는 작업 서버(m2 · m3)에서"; fi
 else
   bad "쿠버 API 에 연결 안 됨" "작업 서버에서 root 로 실행했는지, kubeconfig(/etc/rancher/rke2/rke2.yaml)가 있는지"
   finish

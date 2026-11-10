@@ -549,7 +549,7 @@ for svc in services:
                     bad("경로 " + path + " → " + bn + ":" + str(bp) + " — 서비스에 그 포트 없음", "backend 포트를 Service 포트로", svc)
                 else:
                     ok("https://" + host + path + " → " + bn + ":" + str(bp))
-                others = [x for x in all_paths.get((host, path), []) if not x.startswith(ns + "/")]
+                others = sorted({x for x in all_paths.get((host, path), []) if not x.startswith(ns + "/")})
                 if others:
                     bad("경로 " + path + " 를 다른 곳도 씀: " + ", ".join(others), "경로 이름 겹치지 않게 (가이드 2장 경로표)", svc)
                 all_paths[(host, path)].append(ns + "/" + i["metadata"]["name"])
