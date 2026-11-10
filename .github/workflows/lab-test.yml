@@ -19,6 +19,22 @@ jobs:
       - name: 단계별 실행 상자 그대로 실행 + CHECK
         run: sudo python3 ci/run-steps.py gc-deploy-lab
 
+      - name: 현장 키트 시험 (점검 스크립트 · 첫 배포 꾸러미)
+        run: sudo bash ci/test-site-kit.sh
+
+      - name: 꾸러미용 이미지 꺼내기
+        run: |
+          T=$(sudo cat /root/.lab-old-tag)
+          sudo cp -r /root/out/$T ./sample-images
+          sudo chown -R "$USER" ./sample-images
+          ls -lh sample-images
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sample-images
+          path: sample-images
+          retention-days: 30
+
       - name: 실패 때 상태
         if: failure()
         run: |
