@@ -183,6 +183,19 @@ if expect_file:
         if len(cols) >= 3:
             expect[(cols[0], cols[1])] = {"port": cols[2].strip(), "path": cols[3].strip() if len(cols) > 3 else ""}
 
+def parse_json_stream(text):
+    """kubectl 이 내보내는 JSON — List 하나이거나, 객체 여러 개가 이어진 것 — 을 객체 목록으로"""
+    dec, i, out = json.JSONDecoder(), 0, []
+    while i < len(text):
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            break
+        obj, i = dec.raw_decode(text, i)
+        out.extend(obj.get("items", []) if obj.get("kind") == "List" else [obj])
+    return out
+
+
 rendered = {}       # 서비스 → 객체 목록
 render_err = {}
 for svc in services:
@@ -196,8 +209,7 @@ for svc in services:
     if rc != 0:
         render_err[svc] = err.strip()
         continue
-    dd = json.loads(j)
-    rendered[svc] = dd.get("items", [dd]) if dd.get("kind") == "List" else [dd]
+    rendered[svc] = parse_json_stream(j)
 
 # 묶음 전체의 서비스 · 설정 (다른 서비스 주소 확인용)
 bundle_svc, bundle_cm, bundle_secret_names, bundle_pvc, bundle_netpol = {}, {}, set(), set(), []
