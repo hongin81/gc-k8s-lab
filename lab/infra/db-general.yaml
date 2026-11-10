@@ -1,0 +1,59 @@
+# 공통 DB (연습장용 단순 버전) — 주소는 GC 와 같게: db-general-rw.data-db.svc.cluster.local:5432
+# 실제 GC: CNPG 운영 장치가 만든 PostgreSQL (primary w2 · standby w1, 백업은 스토리지로).
+# 연습장은 데이터를 남기지 않는다 (emptyDir).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-db
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-general
+  namespace: data-db
+  labels: { app: db-general }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: db-general }
+  template:
+    metadata:
+      labels: { app: db-general }
+    spec:
+      nodeSelector:
+        lab.io/role: app
+      containers:
+        - name: postgres
+          image: public.ecr.aws/docker/library/postgres:17-alpine
+          env:
+            - { name: POSTGRES_DB, value: sample_db }
+            - { name: POSTGRES_USER, value: sample }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: db-general-sample, key: password }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - { name: TZ, value: Asia/Seoul }
+          ports:
+            - { name: pg, containerPort: 5432 }
+          readinessProbe:
+            exec: { command: [pg_isready, -U, sample, -d, sample_db] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-general-rw
+  namespace: data-db
+spec:
+  selector: { app: db-general }
+  ports:
+    - { name: pg, port: 5432, targetPort: pg }

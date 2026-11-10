@@ -1,0 +1,28 @@
+{
+  "title": "쿠버네티스 배포 연습 — 서비스배포가이드 7장 따라 하기",
+  "description": "이미지 만들기 → 이미지 창고 적재 → 비밀값 · 태그 → 적용 · 확인 → 고장 5가지 고치기 → 새 버전 · 되돌리기 (약 50분)",
+  "details": {
+    "intro": {
+      "title": "연습장 준비",
+      "text": "intro/text.md",
+      "background": "intro/background.sh",
+      "foreground": "intro/foreground.sh"
+    },
+    "steps": [
+      { "title": "1. 연습장 둘러보기", "text": "step1/text.md", "verify": "step1/verify.sh" },
+      { "title": "2. 이미지 만들기 (인터넷 PC)", "text": "step2/text.md", "verify": "step2/verify.sh" },
+      { "title": "3. 이미지 창고에 넣기 (infra01)", "text": "step3/text.md", "verify": "step3/verify.sh" },
+      { "title": "4. 비밀값 · 태그 · 미리보기", "text": "step4/text.md", "verify": "step4/verify.sh" },
+      { "title": "5. 적용 · 확인", "text": "step5/text.md", "verify": "step5/verify.sh" },
+      { "title": "6. 고장 내고 고치기", "text": "step6/text.md", "verify": "step6/verify.sh" },
+      { "title": "7. 새 버전 · 되돌리기", "text": "step7/text.md", "verify": "step7/verify.sh" }
+    ],
+    "finish": {
+      "title": "마무리",
+      "text": "finish/text.md"
+    }
+  },
+  "backend": {
+    "imageid": "kubernetes-kubeadm-2nodes"
+  }
+}

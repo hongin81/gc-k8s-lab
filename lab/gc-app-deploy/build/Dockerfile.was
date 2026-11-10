@@ -1,0 +1,15 @@
+# WAS(스프링 실행 jar) 이미지 — JRE 버전은 빌드 때 정한다: --build-arg JRE=17 | 21
+# 빌드 폴더에 app.jar 하나만 두고 빌드한다 (*-plain.jar 제외).
+# 연습장은 도커 허브 제한을 피하려고 같은 공식 이미지를 AWS 공개 미러(public.ecr.aws)에서 받는다.
+ARG JRE=17
+FROM public.ecr.aws/docker/library/eclipse-temurin:${JRE}-jre
+
+RUN useradd --system --uid 10001 --gid 0 --no-create-home app
+WORKDIR /app
+COPY app.jar /app/app.jar
+
+# root 아님 · 쓰기는 /tmp 만 (쿠버에서 나머지는 읽기 전용)
+USER 10001
+EXPOSE 8080
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=60 -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Djava.io.tmpdir=/tmp"
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

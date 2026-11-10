@@ -1,0 +1,5 @@
+body { margin: 0; background: #f6f7f9; color: #1f2328; font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+main { max-width: 720px; margin: 48px auto; padding: 0 16px; }
+h1 small { font-size: 0.55em; color: #2f5597; margin-left: 8px; }
+button { padding: 8px 16px; border: 1px solid #2f5597; background: #2f5597; color: #fff; border-radius: 6px; cursor: pointer; }
+pre { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; white-space: pre-wrap; }

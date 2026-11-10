@@ -1,0 +1,7 @@
+# 서비스 전용 공간 — 다른 서비스 네임스페이스에는 apply · delete 하지 않는다
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sample
+  labels:
+    lab.io/service: sample

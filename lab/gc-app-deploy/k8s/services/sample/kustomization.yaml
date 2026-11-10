@@ -1,0 +1,14 @@
+# 배포 때마다 바꾸는 것은 newTag 한 줄뿐 (CHANGE-ME → 이번 TAG)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sample
+resources:
+  - 00-namespace.yaml
+  - 20-sample-web.yaml
+  - 21-sample-api.yaml
+  - 30-ingress.yaml
+images:
+  - name: docker.io/lab/sample-web
+    newTag: CHANGE-ME
+  - name: docker.io/lab/sample-api
+    newTag: CHANGE-ME

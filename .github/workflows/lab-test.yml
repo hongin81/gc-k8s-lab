@@ -1,0 +1,28 @@
+name: 연습장 자동 시험
+
+# 킬러코다에서 사람이 누르는 순서 그대로, 우분투 + kind 연습장에서 처음부터 끝까지 돌린다.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 연습장 준비 (kind)
+        run: sudo bash lab/setup.sh --mode kind
+
+      - name: 단계별 실행 상자 그대로 실행 + CHECK
+        run: sudo python3 ci/run-steps.py gc-deploy-lab
+
+      - name: 실패 때 상태
+        if: failure()
+        run: |
+          sudo kubectl get nodes -o wide || true
+          sudo kubectl get pods -A -o wide || true
+          sudo kubectl -n sample get events --sort-by=.lastTimestamp | tail -40 || true
+          sudo kubectl -n sample describe pods | tail -120 || true

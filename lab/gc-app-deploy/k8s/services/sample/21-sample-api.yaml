@@ -1,0 +1,86 @@
+# API(WAS, 스프링) — 일반 설정값은 ConfigMap, 비밀번호는 Secret(sample-secret)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sample-api-config
+data:
+  SERVER_PORT: "8080"
+  SERVER_SERVLET_CONTEXT_PATH: /sample-api
+  SPRING_DATASOURCE_URL: jdbc:postgresql://db-general-rw.data-db.svc.cluster.local:5432/sample_db
+  SPRING_DATASOURCE_USERNAME: sample
+  APP_WORK_DIR: /tmp/work          # 쓰는 폴더는 /tmp 아래만 (나머지는 읽기 전용)
+  TZ: Asia/Seoul
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-api
+  labels: { app: sample-api }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: { app: sample-api }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels: { app: sample-api }
+    spec:
+      nodeSelector:
+        lab.io/role: app
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: sample-api }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 0
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: sample-api
+          image: docker.io/lab/sample-api          # 태그는 kustomization.yaml 의 newTag
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: sample-api-config }
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: sample-secret, key: DB_PASSWORD }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 640Mi }
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          startupProbe:                             # 기동 기다림: 최대 3분
+            httpGet: { path: /sample-api/health, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: { path: /sample-api/health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /sample-api/health, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-api
+spec:
+  selector: { app: sample-api }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

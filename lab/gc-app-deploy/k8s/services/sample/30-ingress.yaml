@@ -1,0 +1,26 @@
+# 외부 경로 → 서비스 (기존 nginx 의 location /... { proxy_pass ... } 역할)
+# lab.io/check-paths: check-service.sh 가 불러 볼 경로
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sample
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    lab.io/check-paths: "/sample/ /sample-api/health"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [ai.lab.example]
+      secretName: ai-lab-tls
+  rules:
+    - host: ai.lab.example
+      http:
+        paths:
+          - path: /sample/
+            pathType: Prefix
+            backend:
+              service: { name: sample-web, port: { name: http } }
+          - path: /sample-api
+            pathType: Prefix
+            backend:
+              service: { name: sample-api, port: { name: http } }
