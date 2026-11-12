@@ -35,7 +35,12 @@ configs:
       username: labuser
       password: regpass-leak-999
 EOF
-curl -sfL https://get.rke2.io | INSTALL_RKE2_CHANNEL=stable sh - >/dev/null
+# 판 고정 (시험이 그날의 최신판에 흔들리지 않게) · 받기 실패하면 다시
+for i in 1 2 3 4 5; do
+  curl -sfL https://get.rke2.io -o /tmp/install-rke2.sh && INSTALL_RKE2_VERSION=v1.36.6+rke2r1 sh /tmp/install-rke2.sh >/dev/null && break
+  echo "  RKE2 설치 다시 시도 ($i)"; sleep $((i * 15))
+done
+command -v rke2 >/dev/null || { echo "RKE2 설치 실패"; exit 1; }
 systemctl enable --now rke2-server.service
 waitfor 120 bash -c "kubectl get nodes | grep -q ' Ready'"
 kubectl get nodes -o wide
