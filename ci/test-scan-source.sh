@@ -144,4 +144,11 @@ for want in "이미지 주소 dev.registry.local:5000 — 운영 창고(192.168.
 done
 awk '/services\/sample\/ — kustomize/{on=1;next} /^    [^ ]/{on=0} on' "$F2" | grep -q "문제  " && fail "운영 값 사본: 샘플 묶음에 문제가 나옴"
 for leak in $LEAKS; do grep -qF -- "$leak" "$F2" && fail "운영 값 사본에서 새어 나옴: $leak"; done
+echo "  배포 yml 묶음만 있는 폴더 (.svn · 빌드 파일 없이 받아 둔 것) — 묶음 통째로 봐야 함"
+mkdir -p $T/deploy-only && cp -r "$REPO/lab/gc-app-deploy" $T/deploy-only/ && mkdir -p $T/deploy-only/svc-x && cp -r $R/. $T/deploy-only/svc-x/
+mkdir -p $T/d && cd $T/d && node "$REPO/site-kit/scan-source.mjs" $T/deploy-only > $T/d/console.txt || fail "묶음 폴더 실행 실패"
+grep -q "저장소 2개를 찾았습니다" $T/d/console.txt || fail "묶음 폴더: 저장소 수가 틀림 ($(grep 찾았습니다 $T/d/console.txt))"
+F3=$(ls $T/d/source-scan-*.txt)
+grep -qF "scripts/load-images.sh" "$F3" || fail "묶음 폴더: 같은 묶음의 스크립트를 못 봄"
+grep -qF "k8s/services/sample/ — kustomize · 네임스페이스 sample" "$F3" || fail "묶음 폴더: 서비스 yml 을 못 봄"
 echo "소스 수집 시험 통과"

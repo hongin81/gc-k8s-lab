@@ -100,14 +100,38 @@ function walk(dir, onFile, onSkip, depth = 0, state = { n: 0 }) {
   }
 }
 const BUILD_FILES = ["pom.xml", "build.gradle", "build.gradle.kts", "package.json", "pyproject.toml", "requirements.txt", "setup.py"];
-const DEPLOY_ONLY_MARKS = ["kustomization.yaml", "kustomization.yml", "Chart.yaml", "Jenkinsfile", "docker-compose.yml", "docker-compose.yaml", "compose.yaml", ".teamcity"];   // 배포 yml 만 모아 둔 폴더도 저장소로 봄
-function isRepoRoot(d) { return exists(path.join(d, ".git")) || exists(path.join(d, ".svn")) || BUILD_FILES.concat(DEPLOY_ONLY_MARKS).some(f => exists(path.join(d, f))); }
+const isRealRepo = d => exists(path.join(d, ".git")) || exists(path.join(d, ".svn")) || BUILD_FILES.some(f => exists(path.join(d, f)));
+// 진짜 저장소(.git · .svn · 빌드 파일) — 3단계 아래까지
 function findRepos(start, depth = 0, out = []) {
-  if (isRepoRoot(start)) { out.push(start); return out; }
+  if (isRealRepo(start)) { out.push(start); return out; }
   if (depth >= 3) return out;
   let ents; try { ents = fs.readdirSync(start, { withFileTypes: true }); } catch { return out; }
   for (const e of ents) if (e.isDirectory() && !SKIP_DIRS.has(e.name) && !e.name.startsWith(".")) findRepos(path.join(start, e.name), depth + 1, out);
   return out;
+}
+// 저장소 밖에 따로 있는 배포 yml 묶음 (kustomization · Chart.yaml · Jenkinsfile · compose 가 있는 폴더, 또는 k8s · manifests 같은 폴더) — 6단계 아래까지
+const DEPLOY_FILE_MARKS = ["kustomization.yaml", "kustomization.yml", "Chart.yaml", "Jenkinsfile", "docker-compose.yml", "docker-compose.yaml", "compose.yaml", "compose.yml"];
+const DEPLOY_DIR_MARKS = ["k8s", "kubernetes", "manifests", "helm", "charts", "gitops", "kustomize", ".teamcity"];
+function findDeployOnly(dir, real, depth = 0, out = []) {
+  if (real.includes(dir)) return out;
+  if (DEPLOY_FILE_MARKS.some(f => exists(path.join(dir, f)))) { out.push(dir); return out; }
+  const mark = DEPLOY_DIR_MARKS.find(f => exists(path.join(dir, f)));
+  if (mark) { out.push(path.join(dir, mark)); }
+  if (depth >= 6) return out;
+  let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of ents) if (e.isDirectory() && !SKIP_DIRS.has(e.name) && !e.name.startsWith(".") && e.name !== mark) findDeployOnly(path.join(dir, e.name), real, depth + 1, out);
+  return out;
+}
+// 받은 폴더 → 훑을 저장소 목록. 배포 yml 묶음은 서비스 폴더 하나만 떼지 않고 받은 폴더 바로 아래 묶음(예: gc-app-deploy) 통째로 — 스크립트 · 빌드 폴더도 같이
+function findAllRepos(start) {
+  const real = findRepos(start);
+  if (real.includes(start)) return [start];
+  const dep = findDeployOnly(start, real);
+  if (!real.length) return dep.length ? [start] : [];
+  const inside = (a, b) => a === b || a.startsWith(b + path.sep);
+  const tops = dep.map(d => { const first = path.relative(start, d).split(path.sep)[0]; const top = path.join(start, first);
+    return real.some(r => inside(r, top)) ? d : top; });
+  return uniq([...real, ...tops]);
 }
 const tag = (s, name) => { const m = s && s.match(new RegExp(`<${name}>\\s*([^<]+?)\\s*</${name}>`)); return m ? m[1] : null; };
 const props = s => { const o = {}; const b = s.match(/<properties>([\s\S]*?)<\/properties>/)?.[1] || ""; for (const m of b.matchAll(/<([A-Za-z0-9_.-]+)>\s*([^<]*?)\s*<\/\1>/g)) o[m[1]] = m[2]; return o; };
@@ -880,7 +904,7 @@ const toolsOf = r => uniq([...r.ci.keys(), ...r.gitops.map(x => x.split(" ")[0])
 const regNote = h => !SITE.registry ? "" : h === SITE.registry ? " (운영 창고)" : SITE.mirrors.includes(h) ? " (미러로 운영 창고에 감)" : /^\$/.test(h) ? "" : " (운영 창고 아님)";
 
 console.log("소스 저장소 수집 — 읽기만 합니다 (소스를 바꾸지 않음) · 비밀번호처럼 보이는 값은 *** 로 가립니다");
-const repos = [...new Set(args.flatMap(a => findRepos(path.resolve(a))))];
+const repos = [...new Set(args.flatMap(a => findAllRepos(path.resolve(a))))];
 if (!repos.length) { console.log("저장소를 찾지 못했습니다. 소스를 받아 둔 폴더를 주세요. 예) node scan-source.mjs D:\\work"); process.exit(1); }
 console.log(`저장소 ${repos.length}개를 찾았습니다.`);
 const results = repos.map((root, i) => { process.stdout.write(`  [${i + 1}/${repos.length}] ${path.basename(root)} ... `); const r = scanRepo(root); markSiblings(r); r.kc = checkK8s(r); r.gitops = gitopsOf(r); r.ciServers = ciServersOf(r); console.log(`파일 ${r.files}개`); return r; });
