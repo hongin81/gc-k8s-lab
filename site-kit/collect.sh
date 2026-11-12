@@ -45,7 +45,11 @@ done
 [ -z "${KUBECONFIG:-}" ] && [ -f /etc/rancher/rke2/rke2.yaml ] && export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
 [ -z "${CRI_CONFIG_FILE:-}" ] && [ -f /var/lib/rancher/rke2/agent/etc/crictl.yaml ] && export CRI_CONFIG_FILE=/var/lib/rancher/rke2/agent/etc/crictl.yaml
 
-HOST=$(hostname)
+HOST=$(hostname 2>/dev/null || uname -n)
+# 꼭 필요한 기본 명령 — 최소 설치 서버에는 없을 수 있음
+for c in awk sed grep tar timeout; do
+  command -v $c >/dev/null 2>&1 || { echo "필요한 명령 '$c' 이(가) 이 서버에 없습니다. 설치 후 다시 돌려 주세요 (수세: zypper in gawk · 레드햇: dnf install gawk)."; exit 1; }
+done
 line() { printf '%s\n' "════════════════════════════════════════════════════════════"; }
 
 if [ "$(id -u)" != 0 ]; then
@@ -393,7 +397,7 @@ sed -n '1,45p' "$SUM"
 echo "  ... (요약 전체는 결과 파일 안 00-summary.txt)"
 echo
 # 작업 서버 방식이면 작업 서버 주소, --node 면 이 서버 자신의 주소
-if [ "$MODE" = node ]; then ADDR=$(hostname -I 2>/dev/null | awk '{print $1}'); else ADDR=${WORK_SERVER:-$(hostname -I 2>/dev/null | awk '{print $1}')}; fi
+if [ "$MODE" = node ]; then ADDR=$(hostname -I 2>/dev/null | awk '{print $1}' || ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/,"",$4); print $4; exit}'); else ADDR=${WORK_SERVER:-$(hostname -I 2>/dev/null | awk '{print $1}')}; fi
 line
 echo " 끝났습니다. 아래 파일 하나를 보내 주세요."
 echo
