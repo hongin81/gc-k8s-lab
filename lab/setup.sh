@@ -35,6 +35,8 @@ diag() {
 }
 die()  { echo "준비 실패: $*"; diag; echo "fail: $*" > "$STATUS"; exit 1; }
 retry() { local n=$1 i; shift; for i in $(seq 1 "$n"); do "$@" && return 0; sleep 5; done; return 1; }
+# 공개 저장소가 "요청이 너무 잦다"고 거절하면 잠시 쉬었다가 다시 (여러 사람이 같은 주소를 쓰는 킬러코다 대비)
+pull() { local i; for i in 1 2 3 4 5 6 7 8; do docker pull -q "$1" >/dev/null 2>&1 && return 0; sleep $((i * 5)); done; return 1; }
 
 # 노드에서 명령 실행 / 노드에 파일 넣기 (킬러코다: ssh, kind: docker exec)
 node_sh() {
@@ -56,6 +58,7 @@ start_registry() {
   local i bind=0.0.0.0 net=()
   if [ "$MODE" = kind ]; then bind=127.0.0.1; net=(--network kind); fi
   curl -sf http://localhost:5000/v2/ >/dev/null 2>&1 && return 0
+  pull "$ECR/registry:2" || echo "  창고 이미지 받기 재시도 실패 — 그대로 시도"
   for i in 1 2 3 4 5 6; do
     docker rm -f infra01 >/dev/null 2>&1
     docker run -d --restart=always --name infra01 "${net[@]}" -p "$bind:5000:5000" "$ECR/registry:2" >/dev/null \
@@ -162,7 +165,7 @@ kubectl wait --for=condition=Ready nodes --all --timeout=180s >/dev/null || die 
 step "4. 창고 시험 — 시험용 이미지를 넣고 모든 노드가 docker.io 이름으로 받는지"
 start_registry || die "containerd 재시작 뒤 이미지 창고가 응답하지 않음"
 retry 6 docker info >/dev/null 2>&1 || die "도커가 응답하지 않음"
-docker pull -q "$ECR/busybox:1.36" >/dev/null \
+pull "$ECR/busybox:1.36" \
   && docker tag "$ECR/busybox:1.36" localhost:5000/lab/lab-check:1 \
   && docker push localhost:5000/lab/lab-check:1 >/dev/null || die "시험 이미지 넣기 실패"
 for n in $NODES; do
@@ -225,10 +228,10 @@ if ! command -v mvn >/dev/null; then
 exec docker run --rm -v "\$PWD":/src -v /root/.m2:/root/.m2 -w /src -e MAVEN_OPTS=-Xmx384m $ECR/maven:3.9-eclipse-temurin-17 mvn "\$@"
 EOF
   chmod +x /usr/local/bin/mvn
-  docker pull -q "$ECR/maven:3.9-eclipse-temurin-17" >/dev/null
+  pull "$ECR/maven:3.9-eclipse-temurin-17" || die "메이븐 이미지 받기 실패"
 fi
-docker pull -q "$ECR/eclipse-temurin:17-jre" >/dev/null
-docker pull -q "$ECR/nginx:1.27-alpine" >/dev/null
+pull "$ECR/eclipse-temurin:17-jre" || die "자바 실행 이미지 받기 실패"
+pull "$ECR/nginx:1.27-alpine" || die "nginx 이미지 받기 실패"
 command -v podman >/dev/null || echo "  podman 없음 — 적재 스크립트가 docker 로 대신합니다"
 command -v shasum >/dev/null || die "shasum 이 없음"
 
