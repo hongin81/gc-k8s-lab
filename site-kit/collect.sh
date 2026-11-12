@@ -387,7 +387,8 @@ echo
 sed -n '1,45p' "$SUM"
 echo "  ... (요약 전체는 결과 파일 안 00-summary.txt)"
 echo
-ADDR=${WORK_SERVER:-$(hostname -I 2>/dev/null | awk '{print $1}')}
+# 작업 서버 방식이면 작업 서버 주소, --node 면 이 서버 자신의 주소
+if [ "$MODE" = node ]; then ADDR=$(hostname -I 2>/dev/null | awk '{print $1}'); else ADDR=${WORK_SERVER:-$(hostname -I 2>/dev/null | awk '{print $1}')}; fi
 line
 echo " 끝났습니다. 아래 파일 하나를 보내 주세요."
 echo
