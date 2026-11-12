@@ -47,7 +47,7 @@ export PATH=$PATH:/usr/local/bin:/usr/local/sbin
 K8S_DIST=""; for d in rke2 k3s; do if [ -d /etc/rancher/$d ] || [ -d /var/lib/rancher/$d ]; then K8S_DIST=$d; break; fi; done
 RCONF=/etc/rancher/${K8S_DIST:-rke2}; RDATA=/var/lib/rancher/${K8S_DIST:-rke2}
 [ -x $RDATA/bin/kubectl ] && export PATH=$PATH:$RDATA/bin
-[ -z "${KUBECONFIG:-}" ] && [ -f $RCONF/${K8S_DIST:-rke2}.yaml ] && export KUBECONFIG=$RCONF/${K8S_DIST:-rke2}.yaml
+[ -z "${KUBECONFIG:-}" ] && [ -r $RCONF/${K8S_DIST:-rke2}.yaml ] && export KUBECONFIG=$RCONF/${K8S_DIST:-rke2}.yaml   # 읽을 수 없으면(root 아님) ~/.kube/config 를 씀
 [ -z "${CRI_CONFIG_FILE:-}" ] && [ -f $RDATA/agent/etc/crictl.yaml ] && export CRI_CONFIG_FILE=$RDATA/agent/etc/crictl.yaml
 
 HOST=$(hostname 2>/dev/null || uname -n)
@@ -152,7 +152,7 @@ collect_node() {
   save $d/services.txt      bash -c 'systemctl list-units --type=service --state=running --no-pager 2>/dev/null | head -80'
   # 빌드 · 배포 도구 (이 서버에서 도는 것 · 있는 명령) · 배포 스크립트 (이미지를 containerd 에 넣기 · 창고로 보내기 · 쿠버에 올리기)
   local CI_PAT='jenkins|teamcity|buildAgent|gitlab|gitea|tekton|drone|woodpecker|harbor|nexus|sonarqube|argo-workflows|buildkit|kaniko|svnserve'
-  local DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?) +(save|load|push)|skopeo +copy|kubectl .*(apply|set +image|rollout|create +-f)|helm +(upgrade|install)|argocd +app'
+  local DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?) +(save|load|push)|skopeo +copy|(kubectl|\$\{?(K|KC|KCTL|KUBECTL)\}?) .*(apply|set +image|rollout|create +-f)|(helm|\$\{?HELM\}?) +(upgrade|install)|argocd +app'
   HOST_CI=$( { ps -eo args 2>/dev/null; systemctl list-units --type=service --state=running --no-pager 2>/dev/null; docker ps --format '{{.Image}} {{.Names}}' 2>/dev/null; podman ps --format '{{.Image}} {{.Names}}' 2>/dev/null; } \
     | grep -vF 'jenkins|teamcity' | grep -ioE "$CI_PAT" | tr 'A-Z' 'a-z' | sort -u | paste -sd' ' -)
   HOST_TOOLS=""; local t; for t in docker podman nerdctl ctr crictl skopeo buildah helm kustomize argocd svn git mvn java node python3; do have $t && HOST_TOOLS="$HOST_TOOLS $t"; done

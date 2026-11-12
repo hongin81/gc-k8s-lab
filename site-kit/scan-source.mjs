@@ -309,9 +309,9 @@ const DEPLOY_WORDS = [
   ["이미지 창고로 push", /(\b(docker|podman|nerdctl|buildah)|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?)\s+push\b/, "이미지"], ["skopeo 로 창고 사이 복사", /\bskopeo\s+(copy|sync)\b/, "이미지"],
   ["docker save/load (이미지를 파일로 옮김)", /(\b(docker|podman|nerdctl)|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?)\s+(save|load)\b/, "이미지"],
   ["ctr import (서버 containerd 에 직접 넣음)", /\bctr\b[^\n]*\b(i|images?)\s+(import|load)\b/, "이미지"], ["crictl pull", /\bcrictl\s+pull\b/, "이미지"],
-  ["kubectl apply", /\bkubectl\b[^\n]*\bapply\b/, "쿠버"], ["kubectl create/replace", /\bkubectl\b[^\n]*\b(create|replace)\s+(-f|--filename)/, "쿠버"],
-  ["kubectl set image", /\bkubectl\b[^\n]*\bset\s+image\b/, "쿠버"], ["kubectl rollout", /\bkubectl\b[^\n]*\brollout\s+(restart|undo|status)/, "쿠버"],
-  ["helm install/upgrade", /\bhelm\s+(upgrade|install)\b/, "쿠버"], ["kustomize edit set image", /kustomize\s+edit\s+set\s+image/, "쿠버"],
+  ["kubectl apply", /(\bkubectl\b|\$\{?(K|KC|KCTL|KUBECTL)\}?)[^\n]*\sapply\b/, "쿠버"], ["kubectl create/replace", /(\bkubectl\b|\$\{?(K|KC|KCTL|KUBECTL)\}?)[^\n]*\b(create|replace)\s+(-f|--filename)/, "쿠버"],
+  ["kubectl set image", /(\bkubectl\b|\$\{?(K|KC|KCTL|KUBECTL)\}?)[^\n]*\bset\s+image\b/, "쿠버"], ["kubectl rollout", /(\bkubectl\b|\$\{?(K|KC|KCTL|KUBECTL)\}?)[^\n]*\brollout\s+(restart|undo|status)/, "쿠버"],
+  ["helm install/upgrade", /(\bhelm|\$\{?HELM\}?)\s+(upgrade|install)\b/, "쿠버"], ["kustomize edit set image", /kustomize\s+edit\s+set\s+image/, "쿠버"],
   ["argocd 명령", /\bargocd\s+(app|login|repo)\b/, "쿠버"], ["yml 의 태그를 고쳐 올림 (GitOps)", /sed\s+-i[^\n]*(newTag|image:)|\byq\b[^\n]*(\.image|newTag)/, "쿠버"],
   ["svn 받기/올리기", /\bsvn\s+(commit|ci|export|checkout|co|update|up|switch)\b/, "저장소"]];
 // 자동 빌드 · 배포 설정 파일 → 도구 이름

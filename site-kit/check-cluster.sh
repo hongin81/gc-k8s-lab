@@ -18,7 +18,7 @@ source "$ENV_FILE"
 export PATH=$PATH:/usr/local/bin:/usr/local/sbin
 for d in rke2 k3s; do
   [ -x /var/lib/rancher/$d/bin/kubectl ] && export PATH=$PATH:/var/lib/rancher/$d/bin
-  [ -z "${KUBECONFIG:-}" ] && [ -f /etc/rancher/$d/$d.yaml ] && export KUBECONFIG=/etc/rancher/$d/$d.yaml
+  [ -z "${KUBECONFIG:-}" ] && [ -r /etc/rancher/$d/$d.yaml ] && export KUBECONFIG=/etc/rancher/$d/$d.yaml   # 읽을 수 없으면(root 아님) ~/.kube/config 를 씀
 done
 
 OUT=$OUT_DIR/cluster-check-$(date +%Y%m%d-%H%M%S)
@@ -307,14 +307,14 @@ info "이 서버($(hostname))에서 도는 빌드 · 배포 도구: ${host_ci:-�
 tools=""; for t in docker podman nerdctl ctr crictl skopeo buildah helm kustomize argocd svn git mvn java node python3; do command -v $t >/dev/null 2>&1 && tools="$tools $t"; done
 info "이 서버에 있는 명령:${tools:- 없음}"
 # 이 서버에 있는 배포 스크립트 — 이미지를 containerd 에 넣기 · 창고로 보내기 · 쿠버에 올리기
-DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?) +(save|load|push)|skopeo +copy|kubectl .*(apply|set +image|rollout|create +-f)|helm +(upgrade|install)|argocd +app'
+DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?) +(save|load|push)|skopeo +copy|(kubectl|\$\{?(K|KC|KCTL|KUBECTL)\}?) .*(apply|set +image|rollout|create +-f)|(helm|\$\{?HELM\}?) +(upgrade|install)|argocd +app'
 mkdir -p "$OUT/raw/deploy-scripts"
 scripts=$(for d in /root /home /opt /data /app /apps /deploy /srv /work /svn /usr/local/bin; do [ -d "$d" ] && find "$d" -maxdepth 4 -type f \( -name '*.sh' -o -name '*.bash' -o -name 'Jenkinsfile*' -o -name 'Makefile' \) -size -256k 2>/dev/null; done \
   | grep -vE '/(\.git|\.svn|node_modules|\.cache|\.local|snap|go/pkg|\.m2)/|/(collect|cluster-check|bundle-check)-[^/]*/' | head -3000 | while read -r f; do grep -q 'DEPLOY_PAT=\|SECRET_WORDS=' "$f" 2>/dev/null || grep -lE "$DEPLOY_PAT" "$f" 2>/dev/null; done | head -40)   # 점검 도구 자신은 뺌
 if [ -n "$scripts" ]; then
   info "이 서버의 배포 스크립트 $(echo "$scripts" | wc -l) 개 (사본: raw/deploy-scripts/ · 비밀번호처럼 보이는 값은 가림):"
   echo "$scripts" | while read -r f; do
-    what=$(grep -ohE "$DEPLOY_PAT" "$f" | sed -E 's/^ctr .*/ctr import(containerd 에 직접)/; s/^nerdctl .*/nerdctl/; s/^(docker|podman) +(save|load)$/\1 \2/; s/^\$\{?[A-Za-z_]+\}? +(save|load|push)$/docker \1/; s/^kubectl .*set +image.*/kubectl set image/; s/^kubectl .*(apply).*/kubectl apply/; s/^kubectl .*rollout.*/kubectl rollout/; s/^kubectl .*create.*/kubectl create/; s/  +/ /g' | sort -u | paste -sd',' -)
+    what=$(grep -ohE "$DEPLOY_PAT" "$f" | sed -E 's/^ctr .*/ctr import(containerd 에 직접)/; s/^nerdctl .*/nerdctl/; s/^(docker|podman) +(save|load)$/\1 \2/; s/^\$\{?[A-Za-z_]+\}? +(save|load|push)$/docker \1/; s/^\$\{?(K|KC|KCTL|KUBECTL)\}? /kubectl /; s/^\$\{?HELM\}? /helm /; s/^kubectl .*set +image.*/kubectl set image/; s/^kubectl .*(apply).*/kubectl apply/; s/^kubectl .*rollout.*/kubectl rollout/; s/^kubectl .*create.*/kubectl create/; s/  +/ /g' | sort -u | paste -sd',' -)
     say "              $f  — $what"
     mask_text < "$f" > "$OUT/raw/deploy-scripts/$(echo "$f" | sed 's#^/##; s#/#_#g')"
   done
@@ -347,7 +347,7 @@ else
       if (rr[1] + 0 < rr[2] + 0) prob = prob " 준비 안 됨;"
       for (i = 1; i <= n; i++) { split(cs[i], f, "|"); img = f[1]; imgs = imgs (imgs == "" ? "" : " + ") img
         nm = img; sub(/@.*/, "", nm); t = nm; if (t ~ /:[^\/:]+$/) { sub(/.*:/, "", t) } else t = ""
-        if (t == "" || t == "latest") prob = prob " 태그 " (t == "" ? "없음" : "latest") ";"
+        if (img !~ /@sha256:/ && (t == "" || t == "latest")) prob = prob " 태그 " (t == "" ? "없음" : "latest") ";"   # @sha256 고정은 괜찮음
         h = ""; if (index(img, "/") > 0) { h = substr(img, 1, index(img, "/") - 1); if (h !~ /[.:]/ && h != "localhost") h = "" }
         if (reg != "" && h != "" && h != reg && h != "docker.io") prob = prob " 창고 " h " (운영 창고 아님);"
         if (f[2] == "") prob = prob " 준비 확인 없음;"
@@ -356,12 +356,12 @@ else
       if (role != "" && index($6, role) == 0) prob = prob " 서버 지정(" role ") 없음;"
       print line imgs "  ← " how($7); if (prob != "") print "                └ 확인:" prob }' | head -80 | tee -a "$REPORT"
   nprob=$(grep -c "└ 확인:" "$REPORT" 2>/dev/null)
-  [ "${nprob:-0}" -gt 0 ] && bad "앱 $nprob 개에 확인할 점 (위 └ 줄)" "태그는 저장 번호로 · 창고는 $REGISTRY · readinessProbe · resources · nodeSelector $ROLE_LABEL (가이드 서비스 카드)"
+  [ "${nprob:-0}" -gt 0 ] && bad "앱 $nprob 개에 확인할 점 (위 └ 줄)" "태그는 저장 번호로 · 창고는 $REGISTRY · readinessProbe · resources${ROLE_LABEL:+ · nodeSelector $ROLE_LABEL} (가이드 서비스 카드)"
 fi
 # Service 가 파드를 못 찾는지 (selector · 포트 이름 · 준비 상태)
 noep=$(k get endpoints -A --no-headers 2>/dev/null | awk -v sys="$SYS_NS" -v skip="$skip_ns" '$1 !~ sys && index(skip, " "$1" ")==0 && $3=="<none>" {print $1"/"$2}')
 withsel=$(k get svc -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.selector}{"\n"}{end}' | awk -F'\t' '$2!="" {print $1}')
-noep=$(for s in $noep; do echo "$withsel" | grep -qx "$s" && echo "$s"; done)
+noep=$(for s in $noep; do echo "$withsel" | grep -qx "$s" || continue; if [[ "$s" == *-ro || "$s" == *-r ]] && echo "$withsel" | grep -qx "${s%-*}-rw"; then continue; fi; echo "$s"; done)   # CNPG 읽기 전용 주소는 DB 1대면 비어 있는 게 정상
 if [ -n "$noep" ]; then bad "가리키는 파드가 없는(준비 안 된) Service: $(echo $noep)" "Service 의 selector 가 파드 라벨과 같은지 · targetPort 가 컨테이너 포트와 같은지 · 파드가 준비 됐는지"
 elif [ -n "$apps" ]; then ok "앱 Service 모두 파드와 연결됨"; fi
 # Ingress 가 없는 Service 를 가리키는지
