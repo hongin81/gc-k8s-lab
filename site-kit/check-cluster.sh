@@ -14,8 +14,10 @@ source "$ENV_FILE"
 : "${KAFKA_LABEL:=}" "${SERVICE_NAMESPACES:=}" "${DATA_NAMESPACES:=}" "${OUT_DIR:=/root}"
 
 # RKE2 기본 위치
-[ -x /var/lib/rancher/rke2/bin/kubectl ] && export PATH=$PATH:/var/lib/rancher/rke2/bin
-[ -z "${KUBECONFIG:-}" ] && [ -f /etc/rancher/rke2/rke2.yaml ] && export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+for d in rke2 k3s; do
+  [ -x /var/lib/rancher/$d/bin/kubectl ] && export PATH=$PATH:/var/lib/rancher/$d/bin
+  [ -z "${KUBECONFIG:-}" ] && [ -f /etc/rancher/$d/$d.yaml ] && export KUBECONFIG=/etc/rancher/$d/$d.yaml
+done
 
 OUT=$OUT_DIR/cluster-check-$(date +%Y%m%d-%H%M%S)
 mkdir -p "$OUT/raw"
@@ -125,7 +127,7 @@ if [ -n "$REGISTRY" ]; then
     bad "창고 $REGISTRY 응답 없음" "infra01 의 registry 컨테이너 상태 확인 (인프라 담당)"
   fi
 fi
-f=/etc/rancher/rke2/registries.yaml
+f=/etc/rancher/rke2/registries.yaml; [ -f $f ] || f=/etc/rancher/k3s/registries.yaml
 if [ -f "$f" ]; then
   grep -vE -i 'password|username|auth|token|key' "$f" > "$OUT/raw/registries.yaml.txt"
   if grep -q "${REGISTRY%%:*}" "$f"; then ok "이 서버 미러 설정($f)에 ${REGISTRY%%:*} 있음"

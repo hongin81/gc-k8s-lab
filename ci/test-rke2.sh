@@ -53,14 +53,14 @@ done
 
 echo "== 6. 요약이 RKE2 를 제대로 읽었나"
 S=$D/00-summary.txt
-for want in "RKE2      : rke2 version" "rke2-server 실행 중" "있음  네트워크(CNI)" "있음  입구 Traefik" "있음  PostgreSQL 운영 장치 CNPG" \
+for want in "쿠버 배포판: rke2 version" "rke2-server 실행 중" "있음  네트워크(CNI)" "있음  입구 Traefik" "있음  PostgreSQL 운영 장치 CNPG" \
             "있음  Kafka 운영 장치 Strimzi" "있음  Redis" "있음  MinIO" "db-general" "signal-kafka" "lab/sample-api" "metrics-server" "/sample/"; do
   grep -qF -- "$want" $S || bad "요약에 없음: $want"
 done
-grep -q "token: \*\*\*" $D/node/rke2-config.yaml || bad "RKE2 config.yaml 토큰이 가려지지 않음"
+grep -q "token: \*\*\*" $D/node/k8s-config.yaml || bad "RKE2 config.yaml 토큰이 가려지지 않음"
 grep -q "password: \*\*\*" $D/node/registries.yaml || bad "registries.yaml 비밀번호가 가려지지 않음"
 grep -q "infra01:5000" $D/node/registries.yaml || bad "registries.yaml 미러 주소가 안 보임"
-[ -s $D/cluster/rke2-addons.yaml ] || bad "RKE2 부가 설정(HelmChart) 없음"
+[ -s $D/cluster/k8s-addons.yaml ] || bad "RKE2 부가 설정(HelmChart) 없음"
 grep -q "정상      CNPG" $R/check-cluster-report.txt || bad "클러스터 점검: CNPG 정상 아님"
 grep -q "정상      Strimzi" $R/check-cluster-report.txt || bad "클러스터 점검: Strimzi 정상 아님"
 grep -q "브로커 파드: 1 개 Running" $R/check-cluster-report.txt || bad "클러스터 점검: 브로커 수가 틀림"

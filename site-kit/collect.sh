@@ -41,9 +41,12 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ -x /var/lib/rancher/rke2/bin/kubectl ] && export PATH=$PATH:/var/lib/rancher/rke2/bin
-[ -z "${KUBECONFIG:-}" ] && [ -f /etc/rancher/rke2/rke2.yaml ] && export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-[ -z "${CRI_CONFIG_FILE:-}" ] && [ -f /var/lib/rancher/rke2/agent/etc/crictl.yaml ] && export CRI_CONFIG_FILE=/var/lib/rancher/rke2/agent/etc/crictl.yaml
+# 쿠버 배포판 (RKE2 · k3s) — 설정 파일 위치가 다름
+K8S_DIST=""; for d in rke2 k3s; do if [ -d /etc/rancher/$d ] || [ -d /var/lib/rancher/$d ]; then K8S_DIST=$d; break; fi; done
+RCONF=/etc/rancher/${K8S_DIST:-rke2}; RDATA=/var/lib/rancher/${K8S_DIST:-rke2}
+[ -x $RDATA/bin/kubectl ] && export PATH=$PATH:$RDATA/bin
+[ -z "${KUBECONFIG:-}" ] && [ -f $RCONF/${K8S_DIST:-rke2}.yaml ] && export KUBECONFIG=$RCONF/${K8S_DIST:-rke2}.yaml
+[ -z "${CRI_CONFIG_FILE:-}" ] && [ -f $RDATA/agent/etc/crictl.yaml ] && export CRI_CONFIG_FILE=$RDATA/agent/etc/crictl.yaml
 
 HOST=$(hostname 2>/dev/null || uname -n)
 # 꼭 필요한 기본 명령 — 최소 설치 서버에는 없을 수 있음
@@ -137,10 +140,10 @@ collect_node() {
   save $d/firewall.txt      bash -c 'systemctl is-active firewalld 2>&1; firewall-cmd --list-all 2>/dev/null; echo; iptables -S 2>/dev/null | head -60; echo; nft list ruleset 2>/dev/null | head -60'
   save $d/time.txt          bash -c 'timedatectl 2>/dev/null; chronyc tracking 2>/dev/null; chronyc sources 2>/dev/null'
   save $d/security.txt      bash -c 'getenforce 2>/dev/null; aa-status 2>/dev/null | head -5; swapon --show 2>/dev/null; sysctl net.ipv4.ip_forward vm.swappiness fs.inotify.max_user_instances 2>/dev/null'
-  save $d/rke2.txt          bash -c 'rke2 --version 2>/dev/null; echo; systemctl status rke2-server rke2-agent --no-pager 2>/dev/null | head -30'
-  save $d/rke2-config.yaml  bash -c 'cat /etc/rancher/rke2/config.yaml 2>/dev/null || echo "(없음)"; ls /etc/rancher/rke2/config.yaml.d/ 2>/dev/null && cat /etc/rancher/rke2/config.yaml.d/*.yaml 2>/dev/null'
-  save $d/registries.yaml   bash -c 'cat /etc/rancher/rke2/registries.yaml 2>/dev/null || echo "(없음)"'
-  save $d/containerd-mirror.txt bash -c 'f=/var/lib/rancher/rke2/agent/etc/containerd/config.toml; [ -f $f ] && grep -nE "registry|mirror|endpoint|config_path|insecure" $f; ls -R /var/lib/rancher/rke2/agent/etc/containerd/certs.d 2>/dev/null; cat /var/lib/rancher/rke2/agent/etc/containerd/certs.d/*/hosts.toml 2>/dev/null; cat /etc/containerd/certs.d/*/hosts.toml 2>/dev/null'
+  save $d/k8s-dist.txt      bash -c 'rke2 --version 2>/dev/null; k3s --version 2>/dev/null; echo; systemctl status rke2-server rke2-agent k3s k3s-agent --no-pager 2>/dev/null | head -40'
+  save $d/k8s-config.yaml   bash -c "cat $RCONF/config.yaml 2>/dev/null || echo '(없음)'; ls $RCONF/config.yaml.d/ 2>/dev/null && cat $RCONF/config.yaml.d/*.yaml 2>/dev/null"
+  save $d/registries.yaml   bash -c "cat $RCONF/registries.yaml 2>/dev/null || echo '(없음)'"
+  save $d/containerd-mirror.txt bash -c 'f='"$RDATA"'/agent/etc/containerd/config.toml; [ -f $f ] && grep -nE "registry|mirror|endpoint|config_path|insecure" $f; ls -R '"$RDATA"'/agent/etc/containerd/certs.d 2>/dev/null; cat '"$RDATA"'/agent/etc/containerd/certs.d/*/hosts.toml 2>/dev/null; cat /etc/containerd/certs.d/*/hosts.toml 2>/dev/null'
   save $d/containers.txt    bash -c 'crictl ps 2>/dev/null | head -80; echo; crictl images 2>/dev/null | head -150'
   save $d/gpu.txt           bash -c 'nvidia-smi 2>/dev/null || echo "(nvidia-smi 없음)"; echo; nvidia-smi -L 2>/dev/null; lsmod 2>/dev/null | grep -i nvidia'
   save $d/services.txt      bash -c 'systemctl list-units --type=service --state=running --no-pager 2>/dev/null | head -80'
@@ -148,14 +151,15 @@ collect_node() {
   head_ "이 서버 ($HOST)"
   sum "  OS        : $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-?}") · 커널 $(uname -r)"
   sum "  CPU · 메모리: $(nproc) 코어 · $(free -h 2>/dev/null | awk '/^Mem/{print $2" (사용 "$3")"}')"
-  local r2=없음; systemctl is-active --quiet rke2-server 2>/dev/null && r2="rke2-server 실행 중"; systemctl is-active --quiet rke2-agent 2>/dev/null && r2="rke2-agent 실행 중"
-  sum "  RKE2      : $(rke2 --version 2>/dev/null | head -1 | grep . || echo 없음) · 서비스 $r2"
+  local r2=없음 sv
+  for sv in rke2-server rke2-agent k3s k3s-agent; do systemctl is-active --quiet $sv 2>/dev/null && r2="$sv 실행 중"; done
+  sum "  쿠버 배포판: $( { rke2 --version 2>/dev/null || k3s --version 2>/dev/null; } | head -1 | grep . || echo 없음) · 서비스 $r2"
   local fw=꺼짐; systemctl is-active --quiet firewalld 2>/dev/null && fw=켜짐
   sum "  시간 동기화: $(timedatectl show -p NTPSynchronized --value 2>/dev/null | grep . || echo 알수없음) · 방화벽(firewalld) $fw"
   sum "  디스크(사용률 높은 순):"
   df -h -x tmpfs -x devtmpfs -x overlay 2>/dev/null | awk 'NR>1' | sort -k5 -rn | head -5 | sed 's/^/    /' >> "$SUM"
   sum "  NFS 마운트: $(mount | grep -cEi ' type nfs') 개"
-  sum "  미러 설정(registries.yaml): $( [ -f /etc/rancher/rke2/registries.yaml ] && { awk '/^mirrors:/{m=1;next} /^[^ ]/{m=0} m && /^  [^ -][^:]*:/{gsub(/[" :]/,"",$1); r=$1} m && /https?:\/\//{match($0,/https?:\/\/[^" ]+/); printf "%s → %s  ", r, substr($0,RSTART,RLENGTH)}' /etc/rancher/rke2/registries.yaml; echo; } || echo 없음)"
+  sum "  미러 설정(registries.yaml): $( [ -f $RCONF/registries.yaml ] && { awk '/^mirrors:/{m=1;next} /^[^ ]/{m=0} m && /^  [^ -][^:]*:/{gsub(/[" :]/,"",$1); r=$1} m && /https?:\/\//{match($0,/https?:\/\/[^" ]+/); printf "%s → %s  ", r, substr($0,RSTART,RLENGTH)}' $RCONF/registries.yaml; echo; } || echo 없음)"
   if have nvidia-smi; then sum "  GPU       : $(nvidia-smi -L 2>/dev/null | wc -l) 장 · 드라이버 $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"; fi
   if [ -n "$NFS_SERVER" ]; then sum "  스토리지 NFS $NFS_SERVER:2049 → $(tcp "$NFS_SERVER" 2049)"; fi
 }
@@ -184,7 +188,7 @@ if [ "$MODE" = cluster ]; then
   save cluster/crds.txt           kubectl get crd
   save cluster/apiservices.txt    kubectl get apiservices
   save cluster/webhooks.txt       kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations
-  save cluster/rke2-addons.yaml   kubectl get helmcharts.helm.cattle.io,helmchartconfigs.helm.cattle.io -A -o yaml
+  save cluster/k8s-addons.yaml    kubectl get helmcharts.helm.cattle.io,helmchartconfigs.helm.cattle.io -A -o yaml
   save cluster/helm-releases.txt  bash -c 'if command -v helm >/dev/null; then helm list -A; else kubectl get secrets -A --field-selector type=helm.sh/release.v1 -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name; fi'
   save cluster/priority-quota-limit.txt kubectl get priorityclass,resourcequota,limitrange -A
   save workloads/all-wide.txt     kubectl get all -A -o wide
@@ -278,7 +282,7 @@ if [ "$MODE" = cluster ]; then
   rl=${ROLE_LABEL//./\\.}
   head_ "쿠버 · 서버"
   sum "  쿠버 버전: $(k get --raw /version | grep -o '"gitVersion": *"[^"]*"' | cut -d'"' -f4) · 서버 $(k get nodes --no-headers | wc -l) 대"
-  k get nodes -o custom-columns="이름:.metadata.name,역할라벨:.metadata.labels.$rl,IP:.status.addresses[?(@.type==\"InternalIP\")].address,CPU:.status.capacity.cpu,메모리:.status.capacity.memory,GPU:.status.allocatable.nvidia\.com/gpu,kubelet:.status.nodeInfo.kubeletVersion,런타임:.status.nodeInfo.containerRuntimeVersion" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+Ki$/) $i=sprintf("%.0fGi", $i/1048576); print $0}' | column -t | sed 's/^/  /' >> "$SUM"
+  k get nodes -o custom-columns="이름:.metadata.name,${rl:+역할라벨:.metadata.labels.$rl,}IP:.status.addresses[?(@.type==\"InternalIP\")].address,CPU:.status.capacity.cpu,메모리:.status.capacity.memory,GPU:.status.allocatable.nvidia\.com/gpu,kubelet:.status.nodeInfo.kubeletVersion,런타임:.status.nodeInfo.containerRuntimeVersion" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+Ki$/) $i=sprintf("%.0fGi", $i/1048576); print $0}' | column -t | sed 's/^/  /' >> "$SUM"
   sum ""
   k get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"  OS: "}{.status.nodeInfo.osImage}{" · 커널 "}{.status.nodeInfo.kernelVersion}{" · Ready="}{.status.conditions[?(@.type=="Ready")].status}{" · taint: "}{range .spec.taints[*]}{.key}={.value}:{.effect}{" "}{end}{"\n"}{end}' | sed 's/^/  /' >> "$SUM"
 
@@ -392,6 +396,8 @@ sum ""
 sum "자세한 원본: 이 파일과 같은 폴더의 cluster/ workloads/ network/ storage/ config/ operators/ events/ metrics/ registry/ bundle/ node/"
 [ "$MODE" = node ] && echo "[2/$STEPS] 묶는 중..."
 tar -C "$OUT_DIR" -czf "$OUT.tar.gz" "$NAME" 2>/dev/null
+# sudo 로 돌렸으면 결과를 접속한 사람 것으로 (비밀번호 없이 가져오고 지울 수 있게)
+[ -n "${SUDO_USER:-}" ] && chown -R "$SUDO_USER" "$OUT" "$OUT.tar.gz" 2>/dev/null
 echo
 sed -n '1,45p' "$SUM"
 echo "  ... (요약 전체는 결과 파일 안 00-summary.txt)"
