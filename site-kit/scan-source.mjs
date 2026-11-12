@@ -28,7 +28,11 @@ const isBuildOutput = (dir, name) => name === "build" && ["build.gradle", "build
 const TEXT_EXT = new Set([".java", ".kt", ".groovy", ".scala", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
   ".yml", ".yaml", ".properties", ".xml", ".json", ".conf", ".sh", ".bat", ".cmd", ".ps1", ".py", ".sql", ".env", ".toml",
   ".gradle", ".kts", ".html", ".jsp", ".service", ".ini", ".cfg"]);
-const MAX_FILE = 1024 * 1024, MAX_FILES = 30000, MAX_COPY = 256 * 1024;
+const MAX_FILE = 1024 * 1024, MAX_FILES = 60000, MAX_COPY = 64 * 1024, MAX_COPY_TOTAL = 2 * 1024 * 1024;
+// 숨김 폴더는 건너뛰되 자동 배포 설정이 있는 곳은 본다
+const DOT_KEEP = new Set([".github", ".gitlab", ".circleci", ".gitea", ".woodpecker"]);
+// 시험 · 예제 자료 폴더 (가짜 프로젝트 · 가짜 주소가 많아 판단을 흐림)
+const TEST_DIRS = new Set(["test", "tests", "__tests__", "__mocks__", "__fixtures__", "fixtures", "e2e", "testdata", "test-data", "mocks", "examples", "example", "spec", "specs"]);
 
 const args = process.argv.slice(2).filter(a => !a.startsWith("-"));
 if (!args.length || process.argv.includes("-h") || process.argv.includes("--help")) {
@@ -45,7 +49,10 @@ function maskValue(v) {
   const m = v.match(/^["']?\$\{([A-Za-z0-9_.-]+)(?::[^}]*)?\}["']?$/);   // ${DB_PASSWORD:기본값} → 환경변수 이름은 남김
   return m ? "${" + m[1] + ":***}" : "***";
 }
+const VALUE_SECRETS = [/\bAKIA[0-9A-Z]{16}\b/g, /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, /\bgithub_pat_[A-Za-z0-9_]{20,}/g, /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}/g,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, /\bAIza[0-9A-Za-z_-]{30,}/g, /\beyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}/g, /\bglpat-[A-Za-z0-9_-]{20,}/g];
 function mask(text) {
+  for (const re of VALUE_SECRETS) text = text.replace(re, "***");
   let out = text
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "*** 개인키 가림 ***")
     .replace(/(:\/\/[^:/@\s]+:)[^@/\s]+@/g, "$1***@")
@@ -71,7 +78,10 @@ function walk(dir, onFile, depth = 0, maxDepth = 20, state = { n: 0 }) {
   for (const e of ents) {
     if (state.n >= MAX_FILES) return;
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name) && !isBuildOutput(dir, e.name) && depth < maxDepth) walk(p, onFile, depth + 1, maxDepth, state); }
+    if (e.isDirectory()) {
+      const skip = SKIP_DIRS.has(e.name) || TEST_DIRS.has(e.name.toLowerCase()) || (e.name.startsWith(".") && !DOT_KEEP.has(e.name)) || isBuildOutput(dir, e.name);
+      if (!skip && depth < maxDepth) walk(p, onFile, depth + 1, maxDepth, state);
+    }
     else if (e.isFile()) { state.n++; onFile(p, e.name); }
   }
 }
@@ -112,6 +122,8 @@ const DEPLOY_WORDS = [["scp", /\bscp\b/], ["rsync", /\brsync\b/], ["ssh", /\bssh
   ["nohup java -jar", /nohup\s+java|java\s+-jar/], ["톰캣 · WAS 에 war 복사", /webapps|\.war\b|deployments\/|jeus|weblogic|jboss|wildfly/i],
   ["docker build", /docker\s+(buildx\s+)?build/], ["docker push", /docker\s+push/], ["docker run · compose", /docker\s+run|docker[- ]compose/],
   ["kubectl", /\bkubectl\b/], ["helm", /\bhelm\s/], ["pm2", /\bpm2\b/], ["ansible", /ansible/], ["FTP", /\bs?ftp\b/i]];
+
+const copied = { total: 0 };   // 모든 저장소의 사본 크기 합
 
 // ── 저장소 하나 훑기 ─────────────────────────────────────────────────
 function scanRepo(root) {
@@ -178,12 +190,16 @@ function scanRepo(root) {
       r.envFiles.push({ file: rp, keys: s.split("\n").map(l => l.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/)?.[1]).filter(Boolean) });
     }
     // 배포 관련 파일 사본
-    const inDeployDir = /(^|\/)(k8s|kubernetes|deploy|deployment|helm|charts|kustomize|manifests|scripts|docker|ci|\.github\/workflows)\//i.test(rp) && /\.(ya?ml|sh|json|conf|toml|bat|ps1)$/i.test(base);
+    const inDeployDir = (/(^|\/)(k8s|kubernetes|deploy|deploys|deployment|deployments|helm|charts|kustomize|manifests|gitops|argocd)\//i.test(rp) && /\.(ya?ml|sh|conf|toml|bat|ps1)$/i.test(base))
+      || (/(^|\/)\.(github\/workflows|gitlab|circleci|gitea|woodpecker)\//.test(rp) && /\.ya?ml$/i.test(base));
     const realEnv = /(^|[._-])env$|^\.env/i.test(base) && !/example|sample|template/i.test(base);   // 진짜 비밀값 파일은 사본을 가져오지 않음
     if ((DEPLOY_FILE_RE.test(base) || inDeployDir) && !realEnv && !/\.(key|pem|p12|jks|pfx|keystore|truststore)$/i.test(base)) {
       const s = readText(p);
       {
-        r.deployFiles.push({ file: rp, text: s === null ? "(1MB 넘어 생략)" : mask(s.length > MAX_COPY ? s.slice(0, MAX_COPY) + "\n... (뒤 생략)" : s) });
+        copied.total += s ? Math.min(s.length, MAX_COPY) : 0;
+        const text = s === null ? "(1MB 넘어 생략)" : copied.total > MAX_COPY_TOTAL ? "(전체 사본 한도 2MB 를 넘어 이름만 적음)" :
+          mask(s.length > MAX_COPY ? s.slice(0, MAX_COPY) + "\n... (64KB 뒤는 생략)" : s);
+        r.deployFiles.push({ file: rp, text });
         if (s && /\.(sh|bat|cmd|ps1)$|Jenkinsfile|gitlab-ci|workflows|\.service$|docker-compose|compose\.ya?ml/i.test(rp))
           for (const [w, re] of DEPLOY_WORDS) if (re.test(s)) r.deployWords.set(w, (r.deployWords.get(w) || []).concat(rp));
       }
@@ -241,11 +257,16 @@ results.forEach((r, i) => {
   say(`  파일     : ${r.files}개 (node_modules · target · dist 등 제외)`);
   say(`  프로젝트 :`);
   if (!r.projects.length) say(`    (빌드 파일 없음)`);
-  for (const p of r.projects) {
+  if (r.projects.length > 40) say(`    (프로젝트가 ${r.projects.length}개라 앞 40개만 적음)`);
+  for (const p of r.projects.slice(0, 40)) {
     if (p.kind === "npm") {
       const run = p.scripts.start ? "start=" + p.scripts.start : "";
       say(`    - ${p.dir}/  npm · ${p.name || "-"} · ${p.fw.join(", ") || "프레임워크 못 찾음"}${p.node ? " · node " + p.node : ""}`);
-      say(`        build=${p.scripts.build || "없음"}${run ? " · " + run : ""}  → ${p.fw.some(f => ["express", "@nestjs/core", "fastify", "koa", "next", "nuxt"].includes(f)) ? "Node 서버로 실행" : "정적 화면(빌드 결과를 nginx 로)"}`);
+      const server = p.fw.some(f => ["express", "@nestjs/core", "fastify", "koa", "next", "nuxt"].includes(f)) || /\bnode\s+\S+\.(c|m)?js\b/.test(p.scripts.start || "");
+      const front = p.fw.some(f => ["vite", "react", "vue", "@angular/core", "svelte"].includes(f));
+      const mono = p.workspaces || /\b(turbo|lerna|nx)\b/.test(p.scripts.build || "");
+      const shape = server ? "Node 서버로 실행" : front ? "정적 화면(빌드 결과를 nginx 로)" : mono ? "여러 프로젝트 묶음의 최상위" : "라이브러리 · 도구 (직접 실행 안 함)";
+      say(`        build=${p.scripts.build || "없음"}${run ? " · " + run : ""}  → ${shape}`);
     } else {
       const shape = p.packaging === "war" ? "war → WAS(톰캣 · JBoss 등)에 올리는 방식" : (p.bootPlugin ? "스프링부트 실행 jar" : p.packaging === "pom" ? "상위 묶음(모듈 " + p.modules + "개)" : "jar (실행 방식 확인 필요)");
       say(`    - ${p.dir}/  ${p.kind} · ${p.name || "-"} · 스프링부트 ${p.boot || "-"} · 자바 ${p.java || "-"} · ${shape}${p.finalName ? " · 결과 파일 이름 " + p.finalName : ""}`);

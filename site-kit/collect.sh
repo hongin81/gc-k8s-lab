@@ -102,7 +102,8 @@ mask() {
     -e "/name:[[:space:]]*[\"']?[A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*\$/I{n;s/(value:[[:space:]]*).+/\1***/}" \
     -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----.*-----END [A-Z ]*PRIVATE KEY-----/*** 개인키 가림 ***/' \
     -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\    *** 개인키 가림 ***' \
-    -e 's#(://[^:/@[:space:]]+:)[^@/[:space:]]+@#\1***@#g'
+    -e 's#(://[^:/@[:space:]]+:)[^@/[:space:]]+@#\1***@#g' \
+    -e 's/\bAKIA[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-(ant-|proj-)?[A-Za-z0-9_-]{20,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bAIza[0-9A-Za-z_-]{30,}|\bglpat-[A-Za-z0-9_-]{20,}|\beyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}/***/g'
 }
 T()    { timeout 120 "$@"; }
 save() { local f=$1; shift; mkdir -p "$(dirname "$OUT/$f")"; T "$@" 2>&1 | mask > "$OUT/$f"; }
