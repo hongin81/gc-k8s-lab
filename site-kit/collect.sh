@@ -100,6 +100,7 @@ mask() {
     -e "s/([A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*[:=][[:space:]]*)(\"[^\"]*\"|'[^']*'|[^[:space:],}]+)/\1***/Ig" \
     -e "s/(\"name\":[[:space:]]*\"[A-Za-z0-9_.-]*${SECRET_WORDS}\",[[:space:]]*\"value\":[[:space:]]*)\"[^\"]*\"/\1\"***\"/Ig" \
     -e "/name:[[:space:]]*[\"']?[A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*\$/I{n;s/(value:[[:space:]]*).+/\1***/}" \
+    -e "s/(name:[[:space:]]*[A-Za-z0-9_.-]*${SECRET_WORDS}(\\\\n|\\\\r)+[[:space:]]*value:[[:space:]]*)[^\\\\\"]+/\1***/Ig" \
     -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----.*-----END [A-Z ]*PRIVATE KEY-----/*** 개인키 가림 ***/' \
     -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\    *** 개인키 가림 ***' \
     -e 's#(://[^:/@[:space:]]+:)[^@/[:space:]]+@#\1***@#g' \

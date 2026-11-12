@@ -47,6 +47,8 @@ if (!args.length || process.argv.includes("-h") || process.argv.includes("--help
 const SW = "(pass(?:word|wd)?|pwd|[._-]pw|secret|token|[._-]key|apikey|credentials?|auth|identitytoken)";
 const RE_KV = new RegExp(`([A-Za-z0-9_.-]*${SW}["']?[ \\t]*[:=][ \\t]*)("[^"]*"|'[^']*'|\\$\\{[^}\\n]*\\}|[^\\s,}]+)`, "gi");
 const RE_NAMEVAL = new RegExp(`("name"\\s*:\\s*"[A-Za-z0-9_.-]*${SW}"\\s*,\\s*"value"\\s*:\\s*)"[^"]*"`, "gi");
+// 한 줄 문자열 안에 줄바꿈이 \n 글자로 들어간 YAML (쿠버 마지막 적용 기록 등): name: DB_PASSWORD\n  value: x
+const RE_NAMEESC = new RegExp(`(name:\\s*["']?[A-Za-z0-9_.-]*${SW}["']?(?:\\\\[nr])+\\s*value:\\s*)[^\\\\"]+`, "gi");
 const RE_NAMELINE = new RegExp(`name:\\s*["']?[A-Za-z0-9_.-]*${SW}["']?\\s*$`, "i");
 function maskValue(v) {
   const m = v.match(/^["']?\$\{([A-Za-z0-9_.-]+)(?::[^}]*)?\}["']?$/);   // ${DB_PASSWORD:기본값} → 환경변수 이름은 남김
@@ -60,6 +62,7 @@ function mask(text) {
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "*** 개인키 가림 ***")
     .replace(/(:\/\/[^:/@\s]+:)[^@/\s]+@/g, "$1***@")
     .replace(RE_NAMEVAL, '$1"***"')
+    .replace(RE_NAMEESC, "$1***")
     .replace(RE_KV, (all, k, _w, v) => k + maskValue(v));
   const lines = out.split("\n");
   for (let i = 0; i < lines.length - 1; i++) {
