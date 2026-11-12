@@ -63,6 +63,11 @@ grep -q "infra01:5000" $D/node/registries.yaml || bad "registries.yaml 미러 �
 [ -s $D/cluster/rke2-addons.yaml ] || bad "RKE2 부가 설정(HelmChart) 없음"
 grep -q "정상      CNPG" $R/check-cluster-report.txt || bad "클러스터 점검: CNPG 정상 아님"
 grep -q "정상      Strimzi" $R/check-cluster-report.txt || bad "클러스터 점검: Strimzi 정상 아님"
+grep -q "브로커 파드: 1 개 Running" $R/check-cluster-report.txt || bad "클러스터 점검: 브로커 수가 틀림"
+grep -q "있음  Kafka 브로커 — 파드 1/1" $S || bad "구성 수집: 브로커 수가 틀림"
+grep -q "있음  입구 Traefik — 파드 1/1" $S || bad "구성 수집: 끝난 설치 작업까지 셈"
+grep -q "docker.io → http://infra01:5000" $S || bad "구성 수집: 미러 대상이 안 보임"
+grep -q "Gi" <(grep -A3 "이름 .*역할라벨" $S) || bad "구성 수집: 메모리가 Gi 로 안 바뀜"
 grep -q "이 서버 미러 설정" $R/check-cluster-report.txt || bad "클러스터 점검: 미러 설정 확인 안 됨"
 grep -q "^정상 [0-9]* · 문제 0$" $R/check-bundle-console.txt || bad "배포 묶음 점검: 문제가 나옴"
 [ $fail = 0 ] && echo "RKE2 시험 통과" || { echo "RKE2 시험 실패"; exit 1; }

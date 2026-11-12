@@ -151,7 +151,7 @@ collect_node() {
   sum "  디스크(사용률 높은 순):"
   df -h -x tmpfs -x devtmpfs -x overlay 2>/dev/null | awk 'NR>1' | sort -k5 -rn | head -5 | sed 's/^/    /' >> "$SUM"
   sum "  NFS 마운트: $(mount | grep -cEi ' type nfs') 개"
-  sum "  미러 설정(registries.yaml): $( [ -f /etc/rancher/rke2/registries.yaml ] && grep -cE 'endpoint|http' /etc/rancher/rke2/registries.yaml | sed 's/$/ 줄/' || echo 없음)"
+  sum "  미러 설정(registries.yaml): $( [ -f /etc/rancher/rke2/registries.yaml ] && { awk '/^mirrors:/{m=1;next} /^[^ ]/{m=0} m && /^  [^ -][^:]*:/{gsub(/[" :]/,"",$1); r=$1} m && /https?:\/\//{match($0,/https?:\/\/[^" ]+/); printf "%s → %s  ", r, substr($0,RSTART,RLENGTH)}' /etc/rancher/rke2/registries.yaml; echo; } || echo 없음)"
   if have nvidia-smi; then sum "  GPU       : $(nvidia-smi -L 2>/dev/null | wc -l) 장 · 드라이버 $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"; fi
   if [ -n "$NFS_SERVER" ]; then sum "  스토리지 NFS $NFS_SERVER:2049 → $(tcp "$NFS_SERVER" 2049)"; fi
 }
@@ -225,16 +225,15 @@ if [ "$MODE" = cluster ]; then
   # 연결 시험 ──────────────────────────────────────────
   api=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null | sed -E 's#https?://##')
   {
-    echo "대상                        주소                      결과"
-    [ -n "$api" ] && printf '%-27s %-25s %s\n' "쿠버 API" "$api" "$(tcp "${api%:*}" "${api##*:}")"
-    [ -n "$REGISTRY" ] && printf '%-27s %-25s %s\n' "이미지 창고" "$REGISTRY" "$(tcp "${REGISTRY%:*}" "${REGISTRY##*:}")"
-    [ -n "$INGRESS_VIP" ] && printf '%-27s %-25s %s\n' "입구 가상 주소" "$INGRESS_VIP:443" "$(tcp "$INGRESS_VIP" 443)"
-    [ -n "$INGRESS_VIP" ] && printf '%-27s %-25s %s\n' "입구 가상 주소 (http)" "$INGRESS_VIP:80" "$(tcp "$INGRESS_VIP" 80)"
-    [ -n "$L4_VIP" ] && printf '%-27s %-25s %s\n' "L4" "$L4_VIP:443" "$(tcp "$L4_VIP" 443)"
-    [ -n "$NFS_SERVER" ] && printf '%-27s %-25s %s\n' "스토리지 NFS" "$NFS_SERVER:2049" "$(tcp "$NFS_SERVER" 2049)"
-    for hp in $EXTRA_TCP; do printf '%-27s %-25s %s\n' "추가" "$hp" "$(tcp "${hp%:*}" "${hp##*:}")"; done
+    [ -n "$api" ] && printf '  - %s  %s → %s\n' "쿠버 API" "$api" "$(tcp "${api%:*}" "${api##*:}")"
+    [ -n "$REGISTRY" ] && printf '  - %s  %s → %s\n' "이미지 창고" "$REGISTRY" "$(tcp "${REGISTRY%:*}" "${REGISTRY##*:}")"
+    [ -n "$INGRESS_VIP" ] && printf '  - %s  %s → %s\n' "입구 가상 주소" "$INGRESS_VIP:443" "$(tcp "$INGRESS_VIP" 443)"
+    [ -n "$INGRESS_VIP" ] && printf '  - %s  %s → %s\n' "입구 가상 주소 (http)" "$INGRESS_VIP:80" "$(tcp "$INGRESS_VIP" 80)"
+    [ -n "$L4_VIP" ] && printf '  - %s  %s → %s\n' "L4" "$L4_VIP:443" "$(tcp "$L4_VIP" 443)"
+    [ -n "$NFS_SERVER" ] && printf '  - %s  %s → %s\n' "스토리지 NFS" "$NFS_SERVER:2049" "$(tcp "$NFS_SERVER" 2049)"
+    for hp in $EXTRA_TCP; do printf '  - %s  %s → %s\n' "추가" "$hp" "$(tcp "${hp%:*}" "${hp##*:}")"; done
     for n in $(k get nodes -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{" "}{end}'); do
-      printf '%-27s %-25s %s\n' "서버 kubelet" "$n:10250" "$(tcp "$n" 10250)"
+      printf '  - %s  %s → %s\n' "서버 kubelet" "$n:10250" "$(tcp "$n" 10250)"
     done
     echo
     if [ -n "$INGRESS_VIP" ] && [ -n "$DOMAIN" ]; then
@@ -275,16 +274,17 @@ if [ "$MODE" = cluster ]; then
   rl=${ROLE_LABEL//./\\.}
   head_ "쿠버 · 서버"
   sum "  쿠버 버전: $(k get --raw /version | grep -o '"gitVersion": *"[^"]*"' | cut -d'"' -f4) · 서버 $(k get nodes --no-headers | wc -l) 대"
-  k get nodes -o custom-columns="이름:.metadata.name,역할라벨:.metadata.labels.$rl,IP:.status.addresses[?(@.type==\"InternalIP\")].address,CPU:.status.capacity.cpu,메모리:.status.capacity.memory,GPU:.status.allocatable.nvidia\.com/gpu,kubelet:.status.nodeInfo.kubeletVersion,런타임:.status.nodeInfo.containerRuntimeVersion" | sed 's/^/  /' >> "$SUM"
+  k get nodes -o custom-columns="이름:.metadata.name,역할라벨:.metadata.labels.$rl,IP:.status.addresses[?(@.type==\"InternalIP\")].address,CPU:.status.capacity.cpu,메모리:.status.capacity.memory,GPU:.status.allocatable.nvidia\.com/gpu,kubelet:.status.nodeInfo.kubeletVersion,런타임:.status.nodeInfo.containerRuntimeVersion" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+Ki$/) $i=sprintf("%.0fGi", $i/1048576); print "  "$0}' | column -t >> "$SUM"
   sum ""
   k get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"  OS: "}{.status.nodeInfo.osImage}{" · 커널 "}{.status.nodeInfo.kernelVersion}{" · Ready="}{.status.conditions[?(@.type=="Ready")].status}{" · taint: "}{range .spec.taints[*]}{.key}={.value}:{.effect}{" "}{end}{"\n"}{end}' | sed 's/^/  /' >> "$SUM"
 
   head_ "설치된 구성 요소 (자동 감지)"
   pods_all=$(k get pods -A --no-headers)
+  pods_live=$(echo "$pods_all" | awk '$4!="Completed" && $4!="Succeeded" && $2 !~ /^helm-install-/')
   crds=$(k get crd -o name)
   detect() {  # detect <이름> <파드 이름 패턴> [CRD 패턴]
     local label=$1 pat=$2 crd=${3:-} lines total run nss
-    lines=$(echo "$pods_all" | grep -iE "$pat")
+    lines=$(echo "$pods_live" | grep -iE "$pat")
     total=$(echo -n "$lines" | grep -c . || true); run=$(echo -n "$lines" | grep -c " Running " || true)
     nss=$(echo -n "$lines" | awk '{print $1}' | sort -u | paste -sd',' -)
     if [ "${total:-0}" -gt 0 ]; then sum "  있음  $label — 파드 $run/$total Running (네임스페이스 $nss)"
@@ -300,7 +300,9 @@ if [ "$MODE" = cluster ]; then
   detect "PostgreSQL 운영 장치 CNPG"     "cnpg|cloudnative-pg" "postgresql.cnpg.io"
   detect "PostgreSQL DB 파드"             "postgres|-pg-|db-general|pg-signal"
   detect "Kafka 운영 장치 Strimzi"       "strimzi" "kafka.strimzi.io"
-  detect "Kafka 브로커"                  "kafka-[0-9]|broker|-kafka-"
+  kb=$(k get pods -A -l strimzi.io/broker-role=true --no-headers)
+  if [ -n "$kb" ]; then sum "  있음  Kafka 브로커 — 파드 $(echo "$kb" | grep -c ' Running ')/$(echo "$kb" | grep -c .) Running (Strimzi 브로커 역할)"
+  else detect "Kafka 브로커" "kafka-[0-9]|broker-[0-9]"; fi
   detect "Redis"                         "redis"
   detect "MinIO"                         "minio"
   detect "GPU 장치 (NVIDIA)"             "nvidia|gpu-operator|device-plugin" "nvidia.com"
@@ -333,15 +335,15 @@ if [ "$MODE" = cluster ]; then
   head_ "스토리지"
   sum "  StorageClass:"; k get sc --no-headers | sed 's/^/    /' >> "$SUM" || true
   sum "  PV: $(k get pv --no-headers | wc -l) 개"
-  k get pv -o jsonpath='{range .items[*]}{"    "}{.metadata.name}{" "}{.spec.capacity.storage}{" "}{.status.phase}{" → "}{.spec.claimRef.namespace}{"/"}{.spec.claimRef.name}{"  nfs "}{.spec.nfs.server}{":"}{.spec.nfs.path}{.spec.csi.volumeAttributes.server}{.spec.csi.volumeAttributes.share}{"\n"}{end}' >> "$SUM"
-  sum "  PVC:"; k get pvc -A --no-headers | sed 's/^/    /' >> "$SUM" || true
+  k get pv -o jsonpath='{range .items[*]}{"    "}{.metadata.name}{"  "}{.spec.capacity.storage}{"  "}{.status.phase}{" → "}{.spec.claimRef.namespace}{"/"}{.spec.claimRef.name}{"  SC="}{.spec.storageClassName}{"  nfs="}{.spec.nfs.server}{":"}{.spec.nfs.path}{.spec.csi.volumeAttributes.server}{.spec.csi.volumeAttributes.share}{"\n"}{end}' | sed -E 's/  nfs=:$//; s/  SC=  / /' >> "$SUM"
+  sum "  PVC:"; k get pvc -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,상태:.status.phase,크기:.status.capacity.storage,SC:.spec.storageClassName' | sed 's/^/    /' >> "$SUM" || true
 
   head_ "DB (CNPG) · Kafka (Strimzi)"
   db=$(k get clusters.postgresql.cnpg.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,인스턴스:.spec.instances,준비:.status.readyInstances,상태:.status.phase,이미지:.spec.imageName')
   if [ -n "$db" ]; then echo "$db" | sed 's/^/  /' >> "$SUM"; else sum "  CNPG DB 없음"; fi
   dbs=$(k get databases.postgresql.cnpg.io -A -o custom-columns='네임스페이스:.metadata.namespace,DB:.spec.name,소유자:.spec.owner,클러스터:.spec.cluster.name,적용:.status.applied')
   [ -n "$dbs" ] && echo "$dbs" | sed 's/^/  /' >> "$SUM"
-  kf=$(k get kafkas.kafka.strimzi.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,준비:.status.conditions[?(@.type=="Ready")].status,버전:.spec.kafka.version')
+  kf=$(k get kafkas.kafka.strimzi.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,준비:.status.conditions[?(@.type=="Ready")].status,버전:.status.kafkaVersion')
   if [ -n "$kf" ]; then echo "$kf" | sed 's/^/  /' >> "$SUM"; else sum "  Kafka 없음"; fi
   np=$(k get kafkanodepools.kafka.strimzi.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,대수:.spec.replicas,역할:.spec.roles')
   [ -n "$np" ] && echo "$np" | sed 's/^/  /' >> "$SUM"
@@ -374,8 +376,9 @@ if [ "$MODE" = cluster ]; then
   head_ "배포 묶음 (SVN 사본)"
   if [ -d "$OUT/bundle" ]; then
     sum "  위치 $BUNDLE_DIR · 파일 $(wc -l < "$OUT/bundle/files.txt") 개 · $(grep -m1 -E '^(Revision|commit)' "$OUT/bundle/version.txt" || echo '버전 정보 없음')"
-    sum "  서비스 폴더: $(ls "$OUT/bundle/rendered" 2>/dev/null | sed 's/\.yaml$//' | paste -sd' ' -)"
-    sum "  조립 실패: $(grep -l -iE '^error|Error:' "$OUT/bundle/rendered/"*.yaml 2>/dev/null | xargs -n1 basename 2>/dev/null | paste -sd' ' - || true)"
+    sum "  서비스 폴더: $(ls "$OUT/bundle/rendered" 2>/dev/null | sed 's/\.yaml$//; s/^k8s_services_//' | paste -sd' ' -)"
+    bad_r=$(grep -l -iE '^error|Error:' "$OUT/bundle/rendered/"*.yaml 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/\.yaml$//; s/^k8s_services_//' | paste -sd' ' -)
+    sum "  조립 실패: ${bad_r:-없음}"
     sum "  $(wc -l < "$OUT/bundle/excluded.txt") 개 파일은 비밀값 · 키라서 뺌 (bundle/excluded.txt)"
   else sum "  $BUNDLE_DIR 없음 — SVN 배포 묶음을 이 위치에 두고 다시 돌리면 함께 모읍니다 (--bundle 로 위치 지정 가능)"; fi
 fi

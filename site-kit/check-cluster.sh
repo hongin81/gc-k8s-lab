@@ -203,7 +203,8 @@ if k get crd kafkas.kafka.strimzi.io >/dev/null; then
     [ -z "$name" ] && continue
     if [ "$rd" = True ]; then ok "Kafka $ns/$name Ready"; else bad "Kafka $ns/$name Ready 아님" "kubectl -n $ns describe kafka $name"; fi
   done < <(k get kafka -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}')
-  info "브로커 파드: $(k get pods -A --no-headers | grep -iE 'kafka-(broker|[0-9])|-kafka-[0-9]|broker-[0-9]' | grep -c Running) 개 Running"
+  kb=$(k get pods -A -l strimzi.io/broker-role=true --no-headers)
+  info "브로커 파드: $(echo -n "$kb" | grep -c ' Running ') 개 Running / 전체 $(echo -n "$kb" | grep -c .) 개 (Strimzi 브로커 역할)"
 else
   bad "Strimzi(Kafka) 설치 안 됨" "가이드 11장 ④"
 fi
@@ -211,8 +212,10 @@ fi
 # ── 9. Redis · MinIO ────────────────────────────────────────
 sec 9 "Redis · MinIO"
 for name in redis minio; do
-  c=$(k get pods -A --no-headers | grep -i "$name" | grep -c Running)
-  if [ "${c:-0}" -gt 0 ]; then ok "$name 파드 Running $c 개"
+  all=$(k get pods -A --no-headers | grep -i "$name" | awk '$4!="Completed"')
+  tot=$(echo -n "$all" | grep -c .); run=$(echo -n "$all" | grep -c ' Running ')
+  if [ "$tot" -gt 0 ] && [ "$run" -gt 0 ]; then ok "$name 파드 Running $run/$tot"
+  elif [ "$tot" -gt 0 ]; then bad "$name 파드는 있으나 돌지 않음 ($(echo "$all" | awk '{print $1"/"$2" "$4}' | head -2 | paste -sd' ' -))" "kubectl -n <ns> describe pod <파드> 맨 아래 Events"
   else bad "$name 없음" "구성 파일 필요 (가이드 11장 마지막: 아직 구성 파일이 없는 공통 요소)"; fi
 done
 
