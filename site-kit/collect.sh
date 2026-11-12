@@ -49,12 +49,13 @@ SUM=$OUT/00-summary.txt
 # 비밀번호 · 토큰 · 키처럼 보이는 값 가리기
 #  - 이름이 비밀 낱말로 끝나는 키의 값:  DB_PASSWORD: x · JWT_SECRET=x · token: x · MINIO_ACCESS_KEY: x · tls.key: x
 #    (secretName · secretKeyRef · tokenTTL 처럼 뒤에 다른 말이 붙으면 안 가림 — 어떤 Secret 을 쓰는지는 보여야 하므로)
-#  - 두 줄짜리 env:  - name: DB_PASSWORD  /  value: x
+#  - 두 줄짜리 env:  - name: DB_PASSWORD  /  value: x   · 한 줄 JSON(마지막 적용 기록): {"name":"DB_PASSWORD","value":"x"}
 #  - 개인키(PEM) 본문 · 주소 안의 사용자:비밀번호@
 SECRET_WORDS='(pass(word|wd)?|pwd|secret|token|[._-]key|apikey|credentials?|auth|identitytoken)'
 mask() {
   sed -E \
-    -e "s/([A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*[:=][[:space:]]*)(\"[^\"]*\"|'[^']*'|[^[:space:],}]+)/\1***/I" \
+    -e "s/([A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*[:=][[:space:]]*)(\"[^\"]*\"|'[^']*'|[^[:space:],}]+)/\1***/Ig" \
+    -e "s/(\"name\":[[:space:]]*\"[A-Za-z0-9_.-]*${SECRET_WORDS}\",[[:space:]]*\"value\":[[:space:]]*)\"[^\"]*\"/\1\"***\"/Ig" \
     -e "/name:[[:space:]]*[\"']?[A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*\$/I{n;s/(value:[[:space:]]*).+/\1***/}" \
     -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----.*-----END [A-Z ]*PRIVATE KEY-----/*** 개인키 가림 ***/' \
     -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\    *** 개인키 가림 ***' \
