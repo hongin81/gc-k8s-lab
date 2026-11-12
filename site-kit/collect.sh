@@ -1,0 +1,342 @@
+#!/usr/bin/env bash
+# 쿠버 클러스터 구성 수집 (읽기 전용) — 클러스터 구성을 있는 그대로 상세하게 모아 파일 하나로 묶는다.
+#
+# 사용 (root):
+#   bash collect.sh                 작업 서버(관리 서버)에서 — 클러스터 전체 + 이 서버
+#   bash collect.sh --node          그 밖의 서버에서 — 그 서버 정보만 (선택, 인프라 담당)
+#   bash collect.sh --bundle <폴더>  배포 묶음 위치를 직접 지정 (기본: 아래 BUNDLE_DIR)
+# 결과: <OUT_DIR>/collect-<서버>-<일시>.tar.gz  ← 이 파일 하나를 보내면 됨
+#
+# 지키는 것:
+#   - 읽기만 한다 (kubectl get/describe/top, curl GET, 파일 읽기). 아무것도 만들거나 바꾸지 않는다.
+#   - Secret 은 이름 · 종류 · 키 이름만. 값은 꺼내지 않는다. kubeconfig 는 가져오지 않는다.
+#   - 비밀번호 · 토큰 · 키처럼 보이는 값은 모두 *** 로 가린다.
+#   - 배포 묶음에서 비밀값 파일(*.env — 서식 *.example.env 제외)과 개인키는 빼고 가져온다.
+set -uo pipefail
+
+# ==== 현장 값 시작 (실제와 다르면 여기만 고침) ====
+DOMAIN="ai.lab.example"
+INGRESS_VIP="127.0.0.1"
+L4_VIP=""
+REGISTRY="localhost:5000"
+ROLE_LABEL="lab.io/role"
+NFS_SERVER=""
+EXTRA_TCP=""
+BUNDLE_DIR="/opt/deploy/gc-app-deploy"
+OUT_DIR="/root"
+# ==== 현장 값 끝 ====
+
+MODE=cluster
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --node) MODE=node ;;
+    --bundle) BUNDLE_DIR=${2:-}; shift ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+  esac
+  shift
+done
+
+[ -x /var/lib/rancher/rke2/bin/kubectl ] && export PATH=$PATH:/var/lib/rancher/rke2/bin
+[ -z "${KUBECONFIG:-}" ] && [ -f /etc/rancher/rke2/rke2.yaml ] && export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+[ -z "${CRI_CONFIG_FILE:-}" ] && [ -f /var/lib/rancher/rke2/agent/etc/crictl.yaml ] && export CRI_CONFIG_FILE=/var/lib/rancher/rke2/agent/etc/crictl.yaml
+
+HOST=$(hostname)
+NAME=collect-$HOST-$(date +%Y%m%d-%H%M%S)
+OUT=$OUT_DIR/$NAME
+mkdir -p "$OUT"
+SUM=$OUT/00-summary.txt
+
+# 비밀번호 · 토큰 · 키처럼 보이는 값 가리기
+#  - 이름이 비밀 낱말로 끝나는 키의 값:  DB_PASSWORD: x · JWT_SECRET=x · token: x · MINIO_ACCESS_KEY: x · tls.key: x
+#    (secretName · secretKeyRef · tokenTTL 처럼 뒤에 다른 말이 붙으면 안 가림 — 어떤 Secret 을 쓰는지는 보여야 하므로)
+#  - 두 줄짜리 env:  - name: DB_PASSWORD  /  value: x
+#  - 개인키(PEM) 본문 · 주소 안의 사용자:비밀번호@
+SECRET_WORDS='(pass(word|wd)?|pwd|secret|token|[._-]key|apikey|credentials?|auth|identitytoken)'
+mask() {
+  sed -E \
+    -e "s/([A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*[:=][[:space:]]*)(\"[^\"]*\"|'[^']*'|[^[:space:],}]+)/\1***/I" \
+    -e "/name:[[:space:]]*[\"']?[A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*\$/I{n;s/(value:[[:space:]]*).+/\1***/}" \
+    -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----.*-----END [A-Z ]*PRIVATE KEY-----/*** 개인키 가림 ***/' \
+    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\    *** 개인키 가림 ***' \
+    -e 's#(://[^:/@[:space:]]+:)[^@/[:space:]]+@#\1***@#g'
+}
+T()    { timeout 120 "$@"; }
+save() { local f=$1; shift; mkdir -p "$(dirname "$OUT/$f")"; T "$@" 2>&1 | mask > "$OUT/$f"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+sum()  { echo "$*" >> "$SUM"; }
+head_() { sum ""; sum "■ $*"; }
+k()    { T kubectl "$@" 2>/dev/null; }
+tcp()  { timeout 4 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && echo 열림 || echo 닫힘; }
+
+echo "구성 수집 시작 — $HOST ($MODE) · 읽기만 합니다"
+sum "구성 수집 결과 — $(date '+%Y-%m-%d %H:%M:%S') · 서버 $HOST · 방식 $MODE"
+sum "읽기만 했고, Secret 값 · kubeconfig 는 가져오지 않았으며, 비밀번호처럼 보이는 값은 *** 로 가렸습니다."
+
+# ════════════════════════════════════════════════════════════
+# 이 서버 정보 (두 방식 공통)
+# ════════════════════════════════════════════════════════════
+collect_node() {
+  echo "  - 이 서버 정보"
+  local d=node
+  save $d/os.txt            bash -c 'cat /etc/os-release; echo; uname -a; echo; uptime'
+  save $d/cpu-mem.txt       bash -c 'nproc; echo; free -h; echo; lscpu 2>/dev/null | head -20'
+  save $d/disk.txt          bash -c 'df -hT -x tmpfs -x devtmpfs -x overlay 2>/dev/null || df -h; echo; lsblk 2>/dev/null'
+  save $d/mounts-nfs.txt    bash -c 'mount | grep -Ei " type (nfs|nfs4|cifs) " || echo "(NFS 마운트 없음)"; echo; cat /etc/fstab 2>/dev/null'
+  save $d/network.txt       bash -c 'ip -br addr 2>/dev/null; echo; ip route 2>/dev/null; echo; cat /etc/resolv.conf 2>/dev/null; echo; cat /etc/hosts'
+  save $d/listen-ports.txt  bash -c 'ss -ltnup 2>/dev/null || netstat -ltnup 2>/dev/null'
+  save $d/firewall.txt      bash -c 'systemctl is-active firewalld 2>&1; firewall-cmd --list-all 2>/dev/null; echo; iptables -S 2>/dev/null | head -60; echo; nft list ruleset 2>/dev/null | head -60'
+  save $d/time.txt          bash -c 'timedatectl 2>/dev/null; chronyc tracking 2>/dev/null; chronyc sources 2>/dev/null'
+  save $d/security.txt      bash -c 'getenforce 2>/dev/null; aa-status 2>/dev/null | head -5; swapon --show 2>/dev/null; sysctl net.ipv4.ip_forward vm.swappiness fs.inotify.max_user_instances 2>/dev/null'
+  save $d/rke2.txt          bash -c 'rke2 --version 2>/dev/null; echo; systemctl status rke2-server rke2-agent --no-pager 2>/dev/null | head -30'
+  save $d/rke2-config.yaml  bash -c 'cat /etc/rancher/rke2/config.yaml 2>/dev/null || echo "(없음)"; ls /etc/rancher/rke2/config.yaml.d/ 2>/dev/null && cat /etc/rancher/rke2/config.yaml.d/*.yaml 2>/dev/null'
+  save $d/registries.yaml   bash -c 'cat /etc/rancher/rke2/registries.yaml 2>/dev/null || echo "(없음)"'
+  save $d/containerd-mirror.txt bash -c 'f=/var/lib/rancher/rke2/agent/etc/containerd/config.toml; [ -f $f ] && grep -nE "registry|mirror|endpoint|config_path|insecure" $f; ls -R /var/lib/rancher/rke2/agent/etc/containerd/certs.d 2>/dev/null; cat /var/lib/rancher/rke2/agent/etc/containerd/certs.d/*/hosts.toml 2>/dev/null; cat /etc/containerd/certs.d/*/hosts.toml 2>/dev/null'
+  save $d/containers.txt    bash -c 'crictl ps 2>/dev/null | head -80; echo; crictl images 2>/dev/null | head -150'
+  save $d/gpu.txt           bash -c 'nvidia-smi 2>/dev/null || echo "(nvidia-smi 없음)"; echo; nvidia-smi -L 2>/dev/null; lsmod 2>/dev/null | grep -i nvidia'
+  save $d/services.txt      bash -c 'systemctl list-units --type=service --state=running --no-pager 2>/dev/null | head -80'
+
+  head_ "이 서버 ($HOST)"
+  sum "  OS        : $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-?}") · 커널 $(uname -r)"
+  sum "  CPU · 메모리: $(nproc) 코어 · $(free -h 2>/dev/null | awk '/^Mem/{print $2" (사용 "$3")"}')"
+  sum "  RKE2      : $(rke2 --version 2>/dev/null | head -1 || echo 없음) · 서비스 $(systemctl is-active rke2-server 2>/dev/null || systemctl is-active rke2-agent 2>/dev/null || echo ?)"
+  sum "  시간 동기화: $(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo ?) · 방화벽 firewalld $(systemctl is-active firewalld 2>/dev/null || echo ?)"
+  sum "  디스크(사용률 높은 순):"
+  df -h -x tmpfs -x devtmpfs -x overlay 2>/dev/null | awk 'NR>1' | sort -k5 -rn | head -5 | sed 's/^/    /' >> "$SUM"
+  sum "  NFS 마운트: $(mount | grep -cEi ' type nfs') 개"
+  sum "  미러 설정(registries.yaml): $( [ -f /etc/rancher/rke2/registries.yaml ] && grep -cE 'endpoint|http' /etc/rancher/rke2/registries.yaml | sed 's/$/ 줄/' || echo 없음)"
+  if have nvidia-smi; then sum "  GPU       : $(nvidia-smi -L 2>/dev/null | wc -l) 장 · 드라이버 $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"; fi
+  if [ -n "$NFS_SERVER" ]; then sum "  스토리지 NFS $NFS_SERVER:2049 → $(tcp "$NFS_SERVER" 2049)"; fi
+}
+
+collect_node
+
+# ════════════════════════════════════════════════════════════
+# 클러스터 정보 (작업 서버에서)
+# ════════════════════════════════════════════════════════════
+if [ "$MODE" = cluster ]; then
+  if ! k get --raw /version >/dev/null; then
+    sum ""; sum "쿠버 API 에 연결되지 않아 클러스터 정보는 모으지 못했습니다 (작업 서버에서 root 로 실행했는지 확인)."
+    MODE=none
+  fi
+fi
+
+if [ "$MODE" = cluster ]; then
+  echo "  - 클러스터 정보 (1~2분)"
+  # 원본 자료 ───────────────────────────────────────────
+  save cluster/version.txt        kubectl version
+  save cluster/nodes-wide.txt     kubectl get nodes -o wide --show-labels
+  save cluster/nodes.yaml         bash -c 'kubectl get nodes -o yaml | grep -v "^ *- sha256:"'
+  save cluster/nodes-describe.txt kubectl describe nodes
+  save cluster/namespaces.yaml    kubectl get ns -o yaml
+  save cluster/api-resources.txt  kubectl api-resources
+  save cluster/crds.txt           kubectl get crd
+  save cluster/apiservices.txt    kubectl get apiservices
+  save cluster/webhooks.txt       kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations
+  save cluster/rke2-addons.yaml   kubectl get helmcharts.helm.cattle.io,helmchartconfigs.helm.cattle.io -A -o yaml
+  save cluster/helm-releases.txt  bash -c 'if command -v helm >/dev/null; then helm list -A; else kubectl get secrets -A --field-selector type=helm.sh/release.v1 -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name; fi'
+  save cluster/priority-quota-limit.txt kubectl get priorityclass,resourcequota,limitrange -A
+  save workloads/all-wide.txt     kubectl get all -A -o wide
+  save workloads/pods-wide.txt    kubectl get pods -A -o wide
+  save workloads/deployments.yaml kubectl get deploy -A -o yaml
+  save workloads/statefulsets.yaml kubectl get sts -A -o yaml
+  save workloads/daemonsets.yaml  kubectl get ds -A -o yaml
+  save workloads/jobs.yaml        kubectl get cronjobs,jobs -A -o yaml
+  save workloads/pods-describe-problem.txt bash -c 'kubectl get pods -A --no-headers | awk '"'"'$4!="Running" && $4!="Completed" {print $1" "$2}'"'"' | head -30 | while read ns p; do echo "===== $ns/$p"; kubectl -n $ns describe pod $p | tail -40; done'
+  save network/services.yaml      kubectl get svc -A -o yaml
+  save network/services-wide.txt  kubectl get svc -A -o wide
+  save network/endpointslices.txt kubectl get endpointslices -A
+  save network/ingress.yaml       kubectl get ingress -A -o yaml
+  save network/ingressclass.yaml  kubectl get ingressclass -o yaml
+  save network/traefik-crds.yaml  kubectl get ingressroutes.traefik.io,middlewares.traefik.io,tlsoptions.traefik.io,tlsstores.traefik.io -A -o yaml
+  save network/networkpolicy.yaml kubectl get networkpolicy -A -o yaml
+  save storage/storage.txt        kubectl get sc,pv,pvc -A -o wide
+  save storage/pv.yaml            kubectl get pv -o yaml
+  save storage/pvc.yaml           kubectl get pvc -A -o yaml
+  save storage/sc.yaml            kubectl get sc -o yaml
+  save config/configmaps.yaml     kubectl get cm -A --field-selector metadata.name!=kube-root-ca.crt -o yaml
+  save config/secrets-list.txt    kubectl get secrets -A -o go-template='{{range .items}}{{.metadata.namespace}}/{{.metadata.name}}  [{{.type}}]  키: {{range $k,$v := .data}}{{$k}} {{end}}{{"\n"}}{{end}}'
+  save security/rbac.txt          kubectl get serviceaccounts,roles,rolebindings -A
+  save security/clusterrolebindings.txt kubectl get clusterrolebindings -o wide
+  save operators/cnpg.yaml        kubectl get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,poolers.postgresql.cnpg.io,backups.postgresql.cnpg.io,scheduledbackups.postgresql.cnpg.io -A -o yaml
+  save operators/strimzi.yaml     kubectl get kafkas.kafka.strimzi.io,kafkanodepools.kafka.strimzi.io,kafkatopics.kafka.strimzi.io,kafkausers.kafka.strimzi.io -A -o yaml
+  save operators/gpu.yaml         kubectl get clusterpolicies.nvidia.com -o yaml
+  save events/warnings.txt        bash -c 'kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -300'
+  save events/all.txt             bash -c 'kubectl get events -A --sort-by=.lastTimestamp | tail -500'
+  save metrics/top.txt            bash -c 'kubectl top nodes; echo; kubectl top pods -A --sort-by=memory | head -60'
+
+  # 이미지 창고 ─────────────────────────────────────────
+  if [ -n "$REGISTRY" ]; then
+    mkdir -p "$OUT/registry"
+    T curl -s "http://$REGISTRY/v2/_catalog?n=1000" > "$OUT/registry/catalog.json" 2>&1
+    : > "$OUT/registry/tags.txt"
+    for r in $(grep -o '"[^"]*"' "$OUT/registry/catalog.json" | tr -d '"' | grep -v '^repositories$' | head -300); do
+      echo "$r  $(T curl -s "http://$REGISTRY/v2/$r/tags/list" | grep -o '"tags":\[[^]]*\]' | sed 's/"tags"://')" >> "$OUT/registry/tags.txt"
+    done
+  fi
+
+  # 연결 시험 ──────────────────────────────────────────
+  api=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null | sed -E 's#https?://##')
+  {
+    echo "대상                        주소                      결과"
+    [ -n "$api" ] && printf '%-27s %-25s %s\n' "쿠버 API" "$api" "$(tcp "${api%:*}" "${api##*:}")"
+    [ -n "$REGISTRY" ] && printf '%-27s %-25s %s\n' "이미지 창고" "$REGISTRY" "$(tcp "${REGISTRY%:*}" "${REGISTRY##*:}")"
+    [ -n "$INGRESS_VIP" ] && printf '%-27s %-25s %s\n' "입구 가상 주소" "$INGRESS_VIP:443" "$(tcp "$INGRESS_VIP" 443)"
+    [ -n "$INGRESS_VIP" ] && printf '%-27s %-25s %s\n' "입구 가상 주소 (http)" "$INGRESS_VIP:80" "$(tcp "$INGRESS_VIP" 80)"
+    [ -n "$L4_VIP" ] && printf '%-27s %-25s %s\n' "L4" "$L4_VIP:443" "$(tcp "$L4_VIP" 443)"
+    [ -n "$NFS_SERVER" ] && printf '%-27s %-25s %s\n' "스토리지 NFS" "$NFS_SERVER:2049" "$(tcp "$NFS_SERVER" 2049)"
+    for hp in $EXTRA_TCP; do printf '%-27s %-25s %s\n' "추가" "$hp" "$(tcp "${hp%:*}" "${hp##*:}")"; done
+    for n in $(k get nodes -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{" "}{end}'); do
+      printf '%-27s %-25s %s\n' "서버 kubelet" "$n:10250" "$(tcp "$n" 10250)"
+    done
+    echo
+    if [ -n "$INGRESS_VIP" ] && [ -n "$DOMAIN" ]; then
+      echo "https://$DOMAIN/ (입구 $INGRESS_VIP 로 직접) → $(T curl -sk --resolve "$DOMAIN:443:$INGRESS_VIP" -o /dev/null -w '%{http_code}' "https://$DOMAIN/")"
+      [ -n "$L4_VIP" ] && echo "https://$DOMAIN/ (L4 $L4_VIP 로) → $(T curl -sk --resolve "$DOMAIN:443:$L4_VIP" -o /dev/null -w '%{http_code}' "https://$DOMAIN/")"
+      echo "DNS: $DOMAIN → $(getent hosts "$DOMAIN" | awk '{print $1}' | paste -sd' ' -)"
+      echo
+      echo "입구 인증서:"
+      echo | T openssl s_client -connect "$INGRESS_VIP:443" -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -subject -issuer -dates 2>/dev/null
+    fi
+  } > "$OUT/network/connectivity.txt" 2>&1
+
+  # 배포 묶음 (SVN 사본) ─────────────────────────────────
+  if [ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ]; then
+    echo "  - 배포 묶음 $BUNDLE_DIR"
+    mkdir -p "$OUT/bundle/files" "$OUT/bundle/rendered"
+    ( cd "$BUNDLE_DIR" && find . -type f ! -path './.svn/*' ! -path './.git/*' ! -path './evidence/*' | sort ) > "$OUT/bundle/files.txt"
+    ( cd "$BUNDLE_DIR" && (svn info 2>/dev/null || git log -1 2>/dev/null || echo "(svn · git 정보 없음)") ) | mask > "$OUT/bundle/version.txt"
+    ( cd "$BUNDLE_DIR" && find . -type f ! -path './.svn/*' ! -path './.git/*' ! -path './evidence/*' \
+        \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.sh' -o -name '*.py' -o -name 'Dockerfile*' \
+           -o -name '*.template' -o -name '*.md' -o -name '*.conf' -o -name '*.example.env' -o -name '*.toml' \) \
+        ! -name '*.key' ! -name '*.pem' -size -2M ) | while read -r f; do
+      grep -q 'PRIVATE KEY' "$BUNDLE_DIR/$f" 2>/dev/null && continue
+      mkdir -p "$OUT/bundle/files/$(dirname "$f")"
+      mask < "$BUNDLE_DIR/$f" > "$OUT/bundle/files/$f"
+    done
+    ( cd "$BUNDLE_DIR" && find . -type f \( -name '*.env' ! -name '*.example.env' -o -name '*.key' -o -name '*.pem' \) ! -path './.svn/*' ) \
+      | sed 's/^/뺀 파일 (비밀값 · 키): /' > "$OUT/bundle/excluded.txt"
+    for kz in $(cd "$BUNDLE_DIR" && find . -name kustomization.yaml ! -path './.svn/*' | sort); do
+      d=$(dirname "$kz"); n=$(echo "${d#./}" | tr '/' '_')
+      T kubectl kustomize "$BUNDLE_DIR/$d" 2>&1 | mask > "$OUT/bundle/rendered/$n.yaml"
+    done
+  fi
+
+  # ── 요약 ────────────────────────────────────────────
+  echo "  - 요약 만들기"
+  rl=${ROLE_LABEL//./\\.}
+  head_ "쿠버 · 서버"
+  sum "  쿠버 버전: $(k get --raw /version | grep -o '"gitVersion": *"[^"]*"' | cut -d'"' -f4) · 서버 $(k get nodes --no-headers | wc -l) 대"
+  k get nodes -o custom-columns="이름:.metadata.name,역할라벨:.metadata.labels.$rl,IP:.status.addresses[?(@.type==\"InternalIP\")].address,CPU:.status.capacity.cpu,메모리:.status.capacity.memory,GPU:.status.allocatable.nvidia\.com/gpu,kubelet:.status.nodeInfo.kubeletVersion,런타임:.status.nodeInfo.containerRuntimeVersion" | sed 's/^/  /' >> "$SUM"
+  sum ""
+  k get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"  OS: "}{.status.nodeInfo.osImage}{" · 커널 "}{.status.nodeInfo.kernelVersion}{" · Ready="}{.status.conditions[?(@.type=="Ready")].status}{" · taint: "}{range .spec.taints[*]}{.key}={.value}:{.effect}{" "}{end}{"\n"}{end}' | sed 's/^/  /' >> "$SUM"
+
+  head_ "설치된 구성 요소 (자동 감지)"
+  pods_all=$(k get pods -A --no-headers)
+  crds=$(k get crd -o name)
+  detect() {  # detect <이름> <파드 이름 패턴> [CRD 패턴]
+    local label=$1 pat=$2 crd=${3:-} lines total run nss
+    lines=$(echo "$pods_all" | grep -iE "$pat")
+    total=$(echo -n "$lines" | grep -c . || true); run=$(echo -n "$lines" | grep -c " Running " || true)
+    nss=$(echo -n "$lines" | awk '{print $1}' | sort -u | paste -sd',' -)
+    if [ "${total:-0}" -gt 0 ]; then sum "  있음  $label — 파드 $run/$total Running (네임스페이스 $nss)"
+    elif [ -n "$crd" ] && echo "$crds" | grep -qiE "$crd"; then sum "  일부  $label — 종류(CRD)만 있고 파드 없음"
+    else sum "  없음  $label"; fi
+  }
+  detect "네트워크(CNI)"                 "canal|calico|cilium|flannel|kube-ovn"
+  detect "CoreDNS"                       "coredns"
+  detect "입구 Traefik"                  "traefik"
+  detect "입구 ingress-nginx"            "ingress-nginx|nginx-ingress"
+  detect "가상 주소 kube-vip"            "kube-vip"
+  detect "metrics-server (kubectl top)"  "metrics-server"
+  detect "PostgreSQL 운영 장치 CNPG"     "cnpg|cloudnative-pg" "postgresql.cnpg.io"
+  detect "PostgreSQL DB 파드"             "postgres|-pg-|db-general|pg-signal"
+  detect "Kafka 운영 장치 Strimzi"       "strimzi" "kafka.strimzi.io"
+  detect "Kafka 브로커"                  "kafka-[0-9]|broker|-kafka-"
+  detect "Redis"                         "redis"
+  detect "MinIO"                         "minio"
+  detect "GPU 장치 (NVIDIA)"             "nvidia|gpu-operator|device-plugin" "nvidia.com"
+  detect "모니터링 Prometheus"           "prometheus"
+  detect "모니터링 Grafana"              "grafana"
+  detect "로그 Loki"                     "loki|promtail|fluent"
+  detect "Rancher"                       "^cattle-system|rancher"
+  detect "cert-manager"                  "cert-manager"
+  detect "스토리지 공급자(NFS · Longhorn 등)" "nfs-subdir|csi-nfs|nfs-provisioner|longhorn|local-path"
+  detect "백업 Velero"                   "velero"
+
+  head_ "네임스페이스별 파드 (전체 / Running / 그 밖)"
+  echo "$pods_all" | awk '{t[$1]++; if($4=="Running"||$4=="Completed") r[$1]++; else b[$1]++} END{for(n in t) printf "  %-28s %4d %4d %4d\n", n, t[n], r[n]+0, b[n]+0}' | sort >> "$SUM"
+
+  head_ "정상이 아닌 파드"
+  probs=$(echo "$pods_all" | awk '{split($3,a,"/"); if(($4!="Running"&&$4!="Completed")||($4=="Running"&&a[1]!=a[2])) print "  "$1"/"$2"  "$4"  "$3"  재시작 "$5}')
+  sum "${probs:-  없음}"
+
+  head_ "외부 경로 (Ingress)"
+  ing=$(k get ingress -A --no-headers)
+  if [ -n "$ing" ]; then
+    k get ingress -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,클래스:.spec.ingressClassName,도메인:.spec.rules[*].host,경로:.spec.rules[*].http.paths[*].path,서비스:.spec.rules[*].http.paths[*].backend.service.name' | sed 's/^/  /' >> "$SUM"
+  else sum "  없음"; fi
+  sum "  IngressClass: $(k get ingressclass -o jsonpath='{range .items[*]}{.metadata.name}({.spec.controller}) {end}')"
+
+  head_ "밖에서 들어오는 서비스 (LoadBalancer · NodePort)"
+  lb=$(k get svc -A --no-headers | awk '$3=="LoadBalancer"||$3=="NodePort" {print "  "$1"/"$2"  "$3"  외부 "$5"  포트 "$6}')
+  sum "${lb:-  없음}"
+
+  head_ "스토리지"
+  sum "  StorageClass:"; k get sc --no-headers | sed 's/^/    /' >> "$SUM" || true
+  sum "  PV: $(k get pv --no-headers | wc -l) 개"
+  k get pv -o jsonpath='{range .items[*]}{"    "}{.metadata.name}{" "}{.spec.capacity.storage}{" "}{.status.phase}{" → "}{.spec.claimRef.namespace}{"/"}{.spec.claimRef.name}{"  nfs "}{.spec.nfs.server}{":"}{.spec.nfs.path}{.spec.csi.volumeAttributes.server}{.spec.csi.volumeAttributes.share}{"\n"}{end}' >> "$SUM"
+  sum "  PVC:"; k get pvc -A --no-headers | sed 's/^/    /' >> "$SUM" || true
+
+  head_ "DB (CNPG) · Kafka (Strimzi)"
+  db=$(k get clusters.postgresql.cnpg.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,인스턴스:.spec.instances,준비:.status.readyInstances,상태:.status.phase,이미지:.spec.imageName')
+  if [ -n "$db" ]; then echo "$db" | sed 's/^/  /' >> "$SUM"; else sum "  CNPG DB 없음"; fi
+  dbs=$(k get databases.postgresql.cnpg.io -A -o custom-columns='네임스페이스:.metadata.namespace,DB:.spec.name,소유자:.spec.owner,클러스터:.spec.cluster.name,적용:.status.applied')
+  [ -n "$dbs" ] && echo "$dbs" | sed 's/^/  /' >> "$SUM"
+  kf=$(k get kafkas.kafka.strimzi.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,준비:.status.conditions[?(@.type=="Ready")].status,버전:.spec.kafka.version')
+  if [ -n "$kf" ]; then echo "$kf" | sed 's/^/  /' >> "$SUM"; else sum "  Kafka 없음"; fi
+  np=$(k get kafkanodepools.kafka.strimzi.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,대수:.spec.replicas,역할:.spec.roles')
+  [ -n "$np" ] && echo "$np" | sed 's/^/  /' >> "$SUM"
+
+  head_ "이미지 창고 ($REGISTRY)"
+  if [ -s "$OUT/registry/tags.txt" ]; then
+    sum "  이미지 $(wc -l < "$OUT/registry/tags.txt") 종 (전체 목록: registry/tags.txt)"
+    head -40 "$OUT/registry/tags.txt" | sed 's/^/  /' >> "$SUM"
+  else sum "  응답 없음 또는 비어 있음 — $(head -c 200 "$OUT/registry/catalog.json" 2>/dev/null)"; fi
+
+  head_ "연결 시험 (이 서버에서)"
+  sed 's/^/  /' "$OUT/network/connectivity.txt" >> "$SUM"
+
+  head_ "자원 사용"
+  k top nodes | sed 's/^/  /' >> "$SUM" || sum "  kubectl top 안 됨 (metrics-server 없음)"
+  sum "  요청 기준 할당 (서버별):"
+  for n in $(k get nodes -o jsonpath='{.items[*].metadata.name}'); do
+    a=$(k describe node "$n" | sed -n '/Allocated resources/,/Events/p' | awk '$1=="cpu"{c=$2" "$3} $1=="memory"{m=$2" "$3} $1=="nvidia.com/gpu"{g=$2} END{print "CPU "c" · 메모리 "m (g!=""?" · GPU "g:"")}')
+    sum "    $n  $a"
+  done
+
+  head_ "최근 경고 이벤트 (마지막 25건, 전체: events/warnings.txt)"
+  tail -25 "$OUT/events/warnings.txt" | cut -c1-220 | sed 's/^/  /' >> "$SUM"
+
+  head_ "Secret · 설정값"
+  sum "  Secret $(grep -c . "$OUT/config/secrets-list.txt") 개 (이름 · 종류 · 키 이름만: config/secrets-list.txt)"
+  sum "  TLS 인증서 Secret: $(grep -c 'kubernetes.io/tls' "$OUT/config/secrets-list.txt") 개"
+  grep 'kubernetes.io/tls' "$OUT/config/secrets-list.txt" | awk '{print "    "$1}' >> "$SUM"
+
+  head_ "배포 묶음 (SVN 사본)"
+  if [ -d "$OUT/bundle" ]; then
+    sum "  위치 $BUNDLE_DIR · 파일 $(wc -l < "$OUT/bundle/files.txt") 개 · $(grep -m1 -E '^(Revision|commit)' "$OUT/bundle/version.txt" || echo '버전 정보 없음')"
+    sum "  서비스 폴더: $(ls "$OUT/bundle/rendered" 2>/dev/null | sed 's/\.yaml$//' | paste -sd' ' -)"
+    sum "  조립 실패: $(grep -l -iE '^error|Error:' "$OUT/bundle/rendered/"*.yaml 2>/dev/null | xargs -n1 basename 2>/dev/null | paste -sd' ' - || true)"
+    sum "  $(wc -l < "$OUT/bundle/excluded.txt") 개 파일은 비밀값 · 키라서 뺌 (bundle/excluded.txt)"
+  else sum "  $BUNDLE_DIR 없음 — SVN 배포 묶음을 이 위치에 두고 다시 돌리면 함께 모읍니다 (--bundle 로 위치 지정 가능)"; fi
+fi
+
+# ── 묶기 ────────────────────────────────────────────────
+sum ""
+sum "자세한 원본: 이 파일과 같은 폴더의 cluster/ workloads/ network/ storage/ config/ operators/ events/ metrics/ registry/ bundle/ node/"
+tar -C "$OUT_DIR" -czf "$OUT.tar.gz" "$NAME" 2>/dev/null
+echo
+cat "$SUM" | head -60
+echo "  ... (요약 전체: $SUM)"
+echo
+echo "보낼 파일: $OUT.tar.gz  ($(du -h "$OUT.tar.gz" | cut -f1))"
