@@ -152,7 +152,7 @@ collect_node() {
   save $d/services.txt      bash -c 'systemctl list-units --type=service --state=running --no-pager 2>/dev/null | head -80'
   # 빌드 · 배포 도구 (이 서버에서 도는 것 · 있는 명령) · 배포 스크립트 (이미지를 containerd 에 넣기 · 창고로 보내기 · 쿠버에 올리기)
   local CI_PAT='jenkins|teamcity|buildAgent|gitlab|gitea|tekton|drone|woodpecker|harbor|nexus|sonarqube|argo-workflows|buildkit|kaniko|svnserve'
-  local DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman) +(save|load|push)|skopeo +copy|kubectl .*(apply|set +image|rollout|create +-f)|helm +(upgrade|install)|argocd +app'
+  local DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?) +(save|load|push)|skopeo +copy|kubectl .*(apply|set +image|rollout|create +-f)|helm +(upgrade|install)|argocd +app'
   HOST_CI=$( { ps -eo args 2>/dev/null; systemctl list-units --type=service --state=running --no-pager 2>/dev/null; docker ps --format '{{.Image}} {{.Names}}' 2>/dev/null; podman ps --format '{{.Image}} {{.Names}}' 2>/dev/null; } \
     | grep -vF 'jenkins|teamcity' | grep -ioE "$CI_PAT" | tr 'A-Z' 'a-z' | sort -u | paste -sd' ' -)
   HOST_TOOLS=""; local t; for t in docker podman nerdctl ctr crictl skopeo buildah helm kustomize argocd svn git mvn java node python3; do have $t && HOST_TOOLS="$HOST_TOOLS $t"; done

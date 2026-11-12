@@ -307,14 +307,14 @@ info "이 서버($(hostname))에서 도는 빌드 · 배포 도구: ${host_ci:-�
 tools=""; for t in docker podman nerdctl ctr crictl skopeo buildah helm kustomize argocd svn git mvn java node python3; do command -v $t >/dev/null 2>&1 && tools="$tools $t"; done
 info "이 서버에 있는 명령:${tools:- 없음}"
 # 이 서버에 있는 배포 스크립트 — 이미지를 containerd 에 넣기 · 창고로 보내기 · 쿠버에 올리기
-DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman) +(save|load|push)|skopeo +copy|kubectl .*(apply|set +image|rollout|create +-f)|helm +(upgrade|install)|argocd +app'
+DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?) +(save|load|push)|skopeo +copy|kubectl .*(apply|set +image|rollout|create +-f)|helm +(upgrade|install)|argocd +app'
 mkdir -p "$OUT/raw/deploy-scripts"
 scripts=$(for d in /root /home /opt /data /app /apps /deploy /srv /work /svn /usr/local/bin; do [ -d "$d" ] && find "$d" -maxdepth 4 -type f \( -name '*.sh' -o -name '*.bash' -o -name 'Jenkinsfile*' -o -name 'Makefile' \) -size -256k 2>/dev/null; done \
   | grep -vE '/(\.git|\.svn|node_modules|\.cache|\.local|snap|go/pkg|\.m2)/|/(collect|cluster-check|bundle-check)-[^/]*/' | head -3000 | while read -r f; do grep -q 'DEPLOY_PAT=\|SECRET_WORDS=' "$f" 2>/dev/null || grep -lE "$DEPLOY_PAT" "$f" 2>/dev/null; done | head -40)   # 점검 도구 자신은 뺌
 if [ -n "$scripts" ]; then
   info "이 서버의 배포 스크립트 $(echo "$scripts" | wc -l) 개 (사본: raw/deploy-scripts/ · 비밀번호처럼 보이는 값은 가림):"
   echo "$scripts" | while read -r f; do
-    what=$(grep -ohE "$DEPLOY_PAT" "$f" | sed -E 's/^ctr .*/ctr import(containerd 에 직접)/; s/^nerdctl .*/nerdctl/; s/^(docker|podman) +(save|load)$/\1 \2/; s/^kubectl .*set +image.*/kubectl set image/; s/^kubectl .*(apply).*/kubectl apply/; s/^kubectl .*rollout.*/kubectl rollout/; s/^kubectl .*create.*/kubectl create/; s/  +/ /g' | sort -u | paste -sd',' -)
+    what=$(grep -ohE "$DEPLOY_PAT" "$f" | sed -E 's/^ctr .*/ctr import(containerd 에 직접)/; s/^nerdctl .*/nerdctl/; s/^(docker|podman) +(save|load)$/\1 \2/; s/^\$\{?[A-Za-z_]+\}? +(save|load|push)$/docker \1/; s/^kubectl .*set +image.*/kubectl set image/; s/^kubectl .*(apply).*/kubectl apply/; s/^kubectl .*rollout.*/kubectl rollout/; s/^kubectl .*create.*/kubectl create/; s/  +/ /g' | sort -u | paste -sd',' -)
     say "              $f  — $what"
     mask_text < "$f" > "$OUT/raw/deploy-scripts/$(echo "$f" | sed 's#^/##; s#/#_#g')"
   done

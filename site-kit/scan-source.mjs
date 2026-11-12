@@ -306,8 +306,8 @@ const DEPLOY_WORDS = [
   ["WAS 에 war 복사", /webapps\/|\.war\b|standalone\/deployments|jeus|weblogic|jboss|wildfly/i, "서버에서 실행"], ["pm2", /\bpm2\b/, "서버에서 실행"],
   ["docker run/compose", /docker\s+run|docker[- ]compose|\bcompose\s+up/, "서버에서 실행"], ["ansible", /ansible/, "서버에서 실행"],
   ["docker build", /\b(docker|podman|nerdctl)\s+(buildx\s+)?build\b/, "이미지"], ["buildah/kaniko/jib (도커 없이 빌드)", /\bbuildah\s+(bud|build)|kaniko|\bjib:(build|dockerBuild)|\bjib(Docker)?Build\b/, "이미지"],
-  ["이미지 창고로 push", /\b(docker|podman|nerdctl|buildah)\s+push\b/, "이미지"], ["skopeo 로 창고 사이 복사", /\bskopeo\s+(copy|sync)\b/, "이미지"],
-  ["docker save/load (이미지를 파일로 옮김)", /\b(docker|podman|nerdctl)\s+(save|load)\b/, "이미지"],
+  ["이미지 창고로 push", /(\b(docker|podman|nerdctl|buildah)|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?)\s+push\b/, "이미지"], ["skopeo 로 창고 사이 복사", /\bskopeo\s+(copy|sync)\b/, "이미지"],
+  ["docker save/load (이미지를 파일로 옮김)", /(\b(docker|podman|nerdctl)|\$\{?(T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?)\s+(save|load)\b/, "이미지"],
   ["ctr import (서버 containerd 에 직접 넣음)", /\bctr\b[^\n]*\b(i|images?)\s+(import|load)\b/, "이미지"], ["crictl pull", /\bcrictl\s+pull\b/, "이미지"],
   ["kubectl apply", /\bkubectl\b[^\n]*\bapply\b/, "쿠버"], ["kubectl create/replace", /\bkubectl\b[^\n]*\b(create|replace)\s+(-f|--filename)/, "쿠버"],
   ["kubectl set image", /\bkubectl\b[^\n]*\bset\s+image\b/, "쿠버"], ["kubectl rollout", /\bkubectl\b[^\n]*\brollout\s+(restart|undo|status)/, "쿠버"],
@@ -556,14 +556,14 @@ function maskSecretDocs(text) {
 // 스크립트에서 이미지를 보내는 창고 주소 (docker push 192.168.0.10:5000/app · docker tag x ${REGISTRY}/app · skopeo copy … docker://창고/…)
 function notePushTargets(r, s, rp) {
   const vars = {};
-  for (const m of s.matchAll(/^\s*(?:export\s+|set\s+|\$)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']?([^\s"';]+)/gm)) if (!(m[1] in vars)) vars[m[1]] = m[2];
+  for (const m of s.matchAll(/^\s*(?:export\s+|set\s+|\$)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']?([^\s"';]+)/gm)) if (!(m[1] in vars)) vars[m[1]] = m[2].replace(/^\$\{\w+:-([^}]+)\}$/, "$1");   // REG=${REG:-localhost:5000} → 기본값
   const sub = v => v.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}?/g, (a, k) => vars[k] && !/\$/.test(vars[k]) ? vars[k] : a);
   const IMG = /^["']?((?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::\d+)?|[A-Za-z0-9-]+:\d+|localhost(?::\d+)?)\/[A-Za-z0-9._\/${}-]+)/;
   for (const line of s.split("\n")) {
     if (COMMENT_RE.test(line)) continue;
     const cands = [];
-    for (const m of line.matchAll(/\b(?:docker|podman|nerdctl|buildah)\s+push\s+(?:-\S+\s+)*(\S+)/g)) cands.push(m[1]);                 // push <이미지>
-    for (const m of line.matchAll(/\b(?:docker|podman|nerdctl|buildah)\s+tag\s+\S+\s+(\S+)/g)) cands.push(m[1]);                       // tag <원본> <새 이름>
+    for (const m of line.matchAll(/(?:\b(?:docker|podman|nerdctl|buildah)|\$\{?(?:T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?)\s+push\s+(?:"?\$\{[A-Z_]+\[@\]\}"?\s+|-\S+\s+)*(\S+)/g)) cands.push(m[1]);                 // push <이미지>
+    for (const m of line.matchAll(/(?:\b(?:docker|podman|nerdctl|buildah)|\$\{?(?:T|D|DOCKER|PODMAN|NERDCTL|CLI|TOOL|ENGINE|RUNTIME|CONTAINER_[A-Z_]+|BUILDER)\}?)\s+tag\s+\S+\s+(\S+)/g)) cands.push(m[1]);                       // tag <원본> <새 이름>
     if (/\b(build|bud|buildx)\b/.test(line)) for (const m of line.matchAll(/\s(?:-t|--tag)[ =](\S+)/g)) cands.push(m[1]);           // build -t <이미지>
     for (const m of line.matchAll(/\bskopeo\s+(?:copy|sync)\b.*\s(?:docker:\/\/)?(\S+)\s*$/g)) cands.push(m[1]);                    // skopeo copy … <목적지>
     for (const c of cands) {
