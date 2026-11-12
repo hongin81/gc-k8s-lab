@@ -157,7 +157,7 @@ collect_node() {
     | grep -vF 'jenkins|teamcity' | grep -ioE "$CI_PAT" | tr 'A-Z' 'a-z' | sort -u | paste -sd' ' -)
   HOST_TOOLS=""; local t; for t in docker podman nerdctl ctr crictl skopeo buildah helm kustomize argocd svn git mvn java node python3; do have $t && HOST_TOOLS="$HOST_TOOLS $t"; done
   HOST_SCRIPTS=$(for x in /root /home /opt /data /app /apps /deploy /srv /work /svn /usr/local/bin; do [ -d "$x" ] && find "$x" -maxdepth 4 -type f \( -name '*.sh' -o -name '*.bash' -o -name 'Jenkinsfile*' -o -name 'Makefile' \) -size -256k 2>/dev/null; done \
-    | grep -vE '/(\.git|\.svn|node_modules|\.cache|\.local|snap|go/pkg|\.m2)/|/(collect|cluster-check|bundle-check)-[0-9]' | head -3000 | while read -r f; do grep -q 'DEPLOY_PAT=\|SECRET_WORDS=' "$f" 2>/dev/null || grep -lE "$DEPLOY_PAT" "$f" 2>/dev/null; done | head -40)
+    | grep -vE '/(\.git|\.svn|node_modules|\.cache|\.local|snap|go/pkg|\.m2)/|/(collect|cluster-check|bundle-check)-[^/]*/' | head -3000 | while read -r f; do grep -q 'DEPLOY_PAT=\|SECRET_WORDS=' "$f" 2>/dev/null || grep -lE "$DEPLOY_PAT" "$f" 2>/dev/null; done | head -40)
   { echo "이 서버에서 도는 빌드 · 배포 도구: ${HOST_CI:-없음}"; echo "있는 명령:${HOST_TOOLS:- 없음}"; echo; echo "배포 스크립트 (찾은 곳: /root /home /opt /data /app /deploy /srv /work, 4단계):"
     echo "${HOST_SCRIPTS:-(없음)}" | while read -r f; do [ -f "$f" ] && echo "  $f — $(grep -ohE "$DEPLOY_PAT" "$f" | cut -c1-60 | sort -u | paste -sd',' -)"; done; } > "$OUT/$d/deploy-tools.txt"
   if [ -n "$HOST_SCRIPTS" ]; then mkdir -p "$OUT/$d/deploy-scripts"; echo "$HOST_SCRIPTS" | while read -r f; do mask < "$f" > "$OUT/$d/deploy-scripts/$(echo "$f" | sed 's#^/##; s#/#_#g')"; done; fi
@@ -366,10 +366,11 @@ if [ "$MODE" = cluster ]; then
         if (x ~ /^kubectl-client-side-apply|^kubectl$|^kubectl-apply/) x = "kubectl apply"; else if (x ~ /^kubectl-create/) x = "kubectl create"
         else if (x ~ /^kubectl-edit/) x = "kubectl edit"; else if (x ~ /^kubectl-set/) x = "kubectl set image"; else if (x ~ /^kubectl-(rollout|patch)/) x = "kubectl rollout/patch"
         else if (x ~ /argocd/) x = "ArgoCD"; else if (x ~ /^helm/) x = "Helm"; else if (x ~ /^(rancher|steve|Mozilla|agent)/) x = "Rancher 화면"
-        else if (x ~ /kustomize-controller|helm-controller/) x = "Flux"; else if (x ~ /^deploy@/) x = "서버 자동 설치 폴더"; else continue
+        else if (x ~ /kustomize-controller|helm-controller/) x = "Flux"; else if (x ~ /^deploy@/) x = "서버 자동 설치 폴더"
+        else if (x == "" || x ~ /^(kube-controller-manager|kubelet|k3s|rke2|kube-scheduler|before-first-apply)$/) continue
         if (!(x in seen)) { seen[x] = 1; how = how (how == "" ? "" : "+") x } }
-      split($4, rr, "/"); img = $5; gsub(/\|[^ ]*/, "", img)
-      printf "    %s/%s  준비 %s/%s  %s ← %s\n", $1, $3, (rr[1] == "" ? 0 : rr[1]), rr[2], img, (how == "" ? "알 수 없음" : how) }' "$OUT/workloads/managers.tsv" | head -60 > "$OUT/workloads/apps-how.txt"
+      split($4, rr, "/"); img = $5; gsub(/\|[^ ]*/, "", img); sub(/ +$/, "", img); gsub(/ /, " + ", img)
+      printf "    %s/%s  준비 %s/%s  %s  ← %s\n", $1, $3, (rr[1] == "" ? 0 : rr[1]), rr[2], img, (how == "" ? "알 수 없음" : how) }' "$OUT/workloads/managers.tsv" | head -60 > "$OUT/workloads/apps-how.txt"
   if [ -s "$OUT/workloads/apps-how.txt" ]; then cat "$OUT/workloads/apps-how.txt" >> "$SUM"; else sum "    없음 — 앱이 아직 한 번도 안 올라감"; fi
 
   head_ "네임스페이스별 파드 (전체 / Running / 그 밖)"

@@ -310,7 +310,7 @@ info "이 서버에 있는 명령:${tools:- 없음}"
 DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman) +(save|load|push)|skopeo +copy|kubectl .*(apply|set +image|rollout|create +-f)|helm +(upgrade|install)|argocd +app'
 mkdir -p "$OUT/raw/deploy-scripts"
 scripts=$(for d in /root /home /opt /data /app /apps /deploy /srv /work /svn /usr/local/bin; do [ -d "$d" ] && find "$d" -maxdepth 4 -type f \( -name '*.sh' -o -name '*.bash' -o -name 'Jenkinsfile*' -o -name 'Makefile' \) -size -256k 2>/dev/null; done \
-  | grep -vE '/(\.git|\.svn|node_modules|\.cache|\.local|snap|go/pkg|\.m2)/|/(collect|cluster-check|bundle-check)-[0-9]' | head -3000 | while read -r f; do grep -q 'DEPLOY_PAT=\|SECRET_WORDS=' "$f" 2>/dev/null || grep -lE "$DEPLOY_PAT" "$f" 2>/dev/null; done | head -40)   # 점검 도구 자신은 뺌
+  | grep -vE '/(\.git|\.svn|node_modules|\.cache|\.local|snap|go/pkg|\.m2)/|/(collect|cluster-check|bundle-check)-[^/]*/' | head -3000 | while read -r f; do grep -q 'DEPLOY_PAT=\|SECRET_WORDS=' "$f" 2>/dev/null || grep -lE "$DEPLOY_PAT" "$f" 2>/dev/null; done | head -40)   # 점검 도구 자신은 뺌
 if [ -n "$scripts" ]; then
   info "이 서버의 배포 스크립트 $(echo "$scripts" | wc -l) 개 (사본: raw/deploy-scripts/ · 비밀번호처럼 보이는 값은 가림):"
   echo "$scripts" | while read -r f; do
@@ -338,7 +338,8 @@ else
         if (x ~ /^kubectl-client-side-apply|^kubectl$|^kubectl-apply/) x = "kubectl apply"; else if (x ~ /^kubectl-create/) x = "kubectl create"
         else if (x ~ /^kubectl-edit/) x = "kubectl edit"; else if (x ~ /^kubectl-set/) x = "kubectl set image"; else if (x ~ /^kubectl-(rollout|patch)/) x = "kubectl rollout/patch"
         else if (x ~ /argocd/) x = "ArgoCD"; else if (x ~ /^helm/) x = "Helm"; else if (x ~ /^(rancher|steve|Mozilla|agent)/) x = "Rancher 화면"
-        else if (x ~ /kustomize-controller|helm-controller/) x = "Flux"; else if (x ~ /^deploy@/) x = "서버 자동 설치 폴더"; else continue
+        else if (x ~ /kustomize-controller|helm-controller/) x = "Flux"; else if (x ~ /^deploy@/) x = "서버 자동 설치 폴더"
+        else if (x == "" || x ~ /^(kube-controller-manager|kubelet|k3s|rke2|kube-scheduler|before-first-apply)$/) continue
         if (!(x in seen)) { seen[x] = 1; out = out (out == "" ? "" : "+") x } }
       return out == "" ? "알 수 없음" : out }
     { split($4, rr, "/"); if (rr[1] == "") rr[1] = 0
