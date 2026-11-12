@@ -6,10 +6,12 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 export PATH=$PATH:/var/lib/rancher/rke2/bin KUBECONFIG=/etc/rancher/rke2/rke2.yaml
 ECR=public.ecr.aws/docker/library
 say() { echo; echo "== $*"; }
+pull() { local i; for i in 1 2 3 4 5 6 7 8; do docker pull -q "$1" >/dev/null 2>&1 && return 0; sleep $((i * 5)); done; echo "받기 실패: $1"; return 1; }
 waitfor() { local t=$1; shift; for i in $(seq 1 "$t"); do "$@" >/dev/null 2>&1 && return 0; sleep 5; done; echo "기다림 초과: $*"; return 1; }
 
 say "1. 이미지 창고 infra01:5000"
 echo "127.0.0.1 infra01 ai.lab.example" >> /etc/hosts
+pull $ECR/registry:2; pull $ECR/eclipse-temurin:17-jre; pull $ECR/nginx:1.27-alpine
 docker run -d --restart=always --name infra01 -p 5000:5000 $ECR/registry:2 >/dev/null
 
 say "2. RKE2 설치 (Traefik 입구 · 미러 · 가짜 비밀번호 심기)"
