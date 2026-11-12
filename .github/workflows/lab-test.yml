@@ -68,7 +68,8 @@ jobs:
           $f = Get-ChildItem C:\work\source-scan-*.txt | Select-Object -First 1
           if (-not $f) { throw "결과 파일 없음" }
           $t = Get-Content $f.FullName -Raw -Encoding utf8
-          foreach ($w in @("스프링부트 실행 jar", "sample-api", "Dockerfile.was", "lab/gc-app-deploy/build/Dockerfile.was", "Git ·")) {
+          foreach ($w in @("스프링부트 실행 jar", "sample-api", "Dockerfile.was", "lab/gc-app-deploy/build/Dockerfile.was", "Git ·",
+                         "lab/gc-app-deploy/k8s/services/sample/ — kustomize · 네임스페이스 sample", "Service sample-api 8080→http → Deployment sample-api")) {
             if (-not $t.Contains($w)) { throw "못 잡음: $w" }
           }
           Write-Host "윈도우 소스 수집 시험 통과"

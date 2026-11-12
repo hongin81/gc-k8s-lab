@@ -35,6 +35,17 @@ raw()  { local name=$1; shift; "$@" > "$OUT/raw/$name.txt" 2>&1; }
 k()    { kubectl "$@" 2>/dev/null; }
 esc()  { echo "${1//./\\.}"; }        # jsonpath 용: 라벨 이름의 점(.) 앞에 \
 in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# 비밀번호 · 토큰 · 키처럼 보이는 값 가리기 (배포 스크립트 사본용 — collect.sh 와 같은 규칙)
+SECRET_WORDS='(pass(word|wd)?|pwd|secret|token|[._-]key|apikey|credentials?|auth|identitytoken)'
+mask_text() {
+  sed -E \
+    -e "s/([A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*[:=][[:space:]]*)(\"[^\"]*\"|'[^']*'|[^[:space:],}]+)/\1***/Ig" \
+    -e "/name:[[:space:]]*[\"']?[A-Za-z0-9_.-]*${SECRET_WORDS}[\"']?[[:space:]]*\$/I{n;s/(value:[[:space:]]*).+/\1***/}" \
+    -e 's/(login[^#]*[[:space:]](-p|--password)[ =])[^[:space:]]+/\1***/g; s/(--password[ =])[^[:space:]]+/\1***/g; s/(-creds[ =][^:[:space:]]+:)[^[:space:]]+/\1***/g' \
+    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\    *** 개인키 가림 ***' \
+    -e 's#(://[^:/@[:space:]]+:)[^@/[:space:]]+@#\1***@#g' \
+    -e 's/\bAKIA[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-(ant-|proj-)?[A-Za-z0-9_-]{20,}|\bglpat-[A-Za-z0-9_-]{20,}|\beyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}/***/g'
+}
 
 finish() {
   say ""
@@ -274,6 +285,89 @@ for n in $NODES_APP $NODES_AI $NODES_LLM; do
   mem=$(awk '$1=="memory"{print $3}' "$OUT/raw/alloc-$n.txt" | tr -d '()')
   info "$n 요청 CPU ${cpu:-?} · 메모리 ${mem:-?}"
 done
+
+# ── 15. 배포 방식 ────────────────────────────────────────────
+sec 15 "배포 방식 (무엇으로 올리고 있나)"
+if k get crd applications.argoproj.io >/dev/null; then
+  raw argocd-apps kubectl get applications.argoproj.io -A -o wide
+  apps=$(k get applications.argoproj.io -A -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.source.repoURL}{.spec.sources[0].repoURL}{"\t"}{.spec.source.path}{.spec.source.chart}{.spec.sources[0].path}{.spec.sources[0].chart}{"\t"}{.spec.source.targetRevision}{.spec.sources[0].targetRevision}{"\t"}{.spec.destination.namespace}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' | sed -E 's#(://[^:/@]+:)[^@/]+@#\1***@#')
+  ok "ArgoCD 있음 — Application $(echo -n "$apps" | grep -c .) 개 (이름 ← 저장소 경로@브랜치 → 네임스페이스 · 동기화 · 상태)"
+  echo "$apps" | head -30 | awk -F'\t' 'NF>1{printf "              %s ← %s %s@%s → %s · %s · %s\n", $1, $2, $3, ($4==""?"HEAD":$4), ($5==""?"-":$5), $6, $7}' | tee -a "$REPORT"
+  nbad=$(echo "$apps" | awk -F'\t' 'NF>1 && ($6!="Synced" || ($7!="Healthy" && $7!=""))' | wc -l)
+  [ "$nbad" -gt 0 ] && bad "ArgoCD 앱 $nbad 개가 Synced · Healthy 아님" "ArgoCD 화면에서 그 앱의 오류 메시지 확인 (kubectl -n argocd get application <이름> -o yaml 의 status)"
+else info "ArgoCD 없음 — 지금은 kubectl · helm 으로 직접 올리는 방식"; fi
+k get crd kustomizations.kustomize.toolkit.fluxcd.io >/dev/null && info "Flux 있음 — Kustomization $(k get kustomizations.kustomize.toolkit.fluxcd.io -A --no-headers | wc -l) 개"
+CI_PAT='jenkins|teamcity|gitlab|gitea|tekton|drone|woodpecker|harbor|nexus|sonarqube|argo-workflows|buildkit|kaniko|svnserve'
+ci=$(k get pods -A --no-headers | grep -iE "$CI_PAT" | awk '{print $1"/"$2"  "$4}')
+if [ -n "$ci" ]; then info "클러스터 안의 빌드 · 배포 서버:"; echo "$ci" | head -12 | sed 's/^/              /' | tee -a "$REPORT"
+else info "클러스터 안에는 빌드 · 배포 서버(Jenkins · TeamCity · GitLab 등) 없음"; fi
+host_ci=$( { ps -eo args 2>/dev/null; systemctl list-units --type=service --state=running --no-pager 2>/dev/null; docker ps --format '{{.Image}} {{.Names}}' 2>/dev/null; podman ps --format '{{.Image}} {{.Names}}' 2>/dev/null; } \
+  | grep -vF 'jenkins|teamcity' | grep -ioE "$CI_PAT|buildAgent" | tr 'A-Z' 'a-z' | sort -u | paste -sd' ' -)   # 이 점검 자신(찾는 글자)은 뺌
+info "이 서버($(hostname))에서 도는 빌드 · 배포 도구: ${host_ci:-없음}"
+tools=""; for t in docker podman nerdctl ctr crictl skopeo buildah helm kustomize argocd svn git mvn java node python3; do command -v $t >/dev/null 2>&1 && tools="$tools $t"; done
+info "이 서버에 있는 명령:${tools:- 없음}"
+# 이 서버에 있는 배포 스크립트 — 이미지를 containerd 에 넣기 · 창고로 보내기 · 쿠버에 올리기
+DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman) +(save|load|push)|skopeo +copy|kubectl .*(apply|set +image|rollout|create +-f)|helm +(upgrade|install)|argocd +app'
+mkdir -p "$OUT/raw/deploy-scripts"
+scripts=$(for d in /root /home /opt /data /app /apps /deploy /srv /work /svn /usr/local/bin; do [ -d "$d" ] && find "$d" -maxdepth 4 -type f \( -name '*.sh' -o -name '*.bash' -o -name 'Jenkinsfile*' -o -name 'Makefile' \) -size -256k 2>/dev/null; done \
+  | grep -vE '/(\.git|\.svn|node_modules|\.cache|\.local|snap|go/pkg|\.m2)/|/(collect|cluster-check|bundle-check)-[0-9]' | head -3000 | while read -r f; do grep -q 'DEPLOY_PAT=\|SECRET_WORDS=' "$f" 2>/dev/null || grep -lE "$DEPLOY_PAT" "$f" 2>/dev/null; done | head -40)   # 점검 도구 자신은 뺌
+if [ -n "$scripts" ]; then
+  info "이 서버의 배포 스크립트 $(echo "$scripts" | wc -l) 개 (사본: raw/deploy-scripts/ · 비밀번호처럼 보이는 값은 가림):"
+  echo "$scripts" | while read -r f; do
+    what=$(grep -ohE "$DEPLOY_PAT" "$f" | sed -E 's/^ctr .*/ctr import(containerd 에 직접)/; s/^nerdctl .*/nerdctl/; s/^(docker|podman) +(save|load)$/\1 \2/; s/^kubectl .*set +image.*/kubectl set image/; s/^kubectl .*(apply).*/kubectl apply/; s/^kubectl .*rollout.*/kubectl rollout/; s/^kubectl .*create.*/kubectl create/; s/  +/ /g' | sort -u | paste -sd',' -)
+    say "              $f  — $what"
+    mask_text < "$f" > "$OUT/raw/deploy-scripts/$(echo "$f" | sed 's#^/##; s#/#_#g')"
+  done
+else info "이 서버에서 배포 스크립트(이미지 넣기 · 보내기 · kubectl · helm)를 찾지 못함 (찾은 곳: /root /home /opt /data /app /deploy /srv /work, 4단계)"; fi
+
+# ── 16. 올라가 있는 앱 ───────────────────────────────────────
+sec 16 "올라가 있는 앱 (서비스 yml 이 운영 환경에 맞게 되어 있나)"
+SYS_NS='^(kube-|cattle-|fleet-|rancher|cnpg-system|calico|tigera|metallb|longhorn|gpu-operator|nvidia|cert-manager|argocd|ingress|traefik|monitoring|local-path|velero|kubernetes-dashboard|strimzi|istio|linkerd|cilium|keda|external-secrets|sealed-secrets|kyverno|gatekeeper|ci$|cicd)'
+skip_ns=" $DATA_NAMESPACES "
+apps=$(k get deploy,sts -A --show-managed-fields -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.kind}{"\t"}{.metadata.name}{"\t"}{.status.readyReplicas}{"/"}{.spec.replicas}{"\t"}{range .spec.template.spec.containers[*]}{.image}{"|"}{.readinessProbe.periodSeconds}{"|"}{.resources.limits.memory}{.resources.requests.memory}{"|"}{.imagePullPolicy}{" "}{end}{"\t"}{.spec.template.spec.nodeSelector}{"\t"}{range .metadata.managedFields[*]}{.manager}{","}{end}{"\n"}{end}' \
+  | awk -F'\t' -v sys="$SYS_NS" -v skip="$skip_ns" '$1 !~ sys && index(skip, " "$1" ")==0')
+if [ -z "$apps" ]; then
+  info "앱 네임스페이스에 올라간 서비스(Deployment · StatefulSet)가 없음 — 아직 한 번도 못 올림"
+else
+  info "앱 $(echo "$apps" | wc -l) 개 (네임스페이스/이름 · 준비 · 이미지 · 올린 방법):"
+  echo "$apps" > "$OUT/raw/apps.tsv"
+  echo "$apps" | awk -F'\t' -v reg="$REGISTRY" -v role="$ROLE_LABEL" '
+    function how(m,   a, n, i, out, x, seen) {
+      n = split(m, a, ","); out = ""
+      for (i = 1; i <= n; i++) { x = a[i]
+        if (x ~ /^kubectl-client-side-apply|^kubectl$|^kubectl-apply/) x = "kubectl apply"; else if (x ~ /^kubectl-create/) x = "kubectl create"
+        else if (x ~ /^kubectl-edit/) x = "kubectl edit"; else if (x ~ /^kubectl-set/) x = "kubectl set image"; else if (x ~ /^kubectl-(rollout|patch)/) x = "kubectl rollout/patch"
+        else if (x ~ /argocd/) x = "ArgoCD"; else if (x ~ /^helm/) x = "Helm"; else if (x ~ /^(rancher|steve|Mozilla|agent)/) x = "Rancher 화면"
+        else if (x ~ /kustomize-controller|helm-controller/) x = "Flux"; else if (x ~ /^deploy@/) x = "서버 자동 설치 폴더"; else continue
+        if (!(x in seen)) { seen[x] = 1; out = out (out == "" ? "" : "+") x } }
+      return out == "" ? "알 수 없음" : out }
+    { split($4, rr, "/"); if (rr[1] == "") rr[1] = 0
+      line = sprintf("              %s/%s  준비 %s/%s  ", $1, $3, rr[1], rr[2]); n = split($5, cs, " "); imgs = ""; prob = ""
+      if (rr[1] + 0 < rr[2] + 0) prob = prob " 준비 안 됨;"
+      for (i = 1; i <= n; i++) { split(cs[i], f, "|"); img = f[1]; imgs = imgs (imgs == "" ? "" : " + ") img
+        nm = img; sub(/@.*/, "", nm); t = nm; if (t ~ /:[^\/:]+$/) { sub(/.*:/, "", t) } else t = ""
+        if (t == "" || t == "latest") prob = prob " 태그 " (t == "" ? "없음" : "latest") ";"
+        h = ""; if (index(img, "/") > 0) { h = substr(img, 1, index(img, "/") - 1); if (h !~ /[.:]/ && h != "localhost") h = "" }
+        if (reg != "" && h != "" && h != reg && h != "docker.io") prob = prob " 창고 " h " (운영 창고 아님);"
+        if (f[2] == "") prob = prob " 준비 확인 없음;"
+        if (f[3] == "") prob = prob " 자원 한도 없음;"
+        if (f[4] == "Never") prob = prob " 서버에 직접 넣은 이미지만 씀;" }
+      if (role != "" && index($6, role) == 0) prob = prob " 서버 지정(" role ") 없음;"
+      print line imgs "  ← " how($7); if (prob != "") print "                └ 확인:" prob }' | head -80 | tee -a "$REPORT"
+  nprob=$(grep -c "└ 확인:" "$REPORT" 2>/dev/null)
+  [ "${nprob:-0}" -gt 0 ] && bad "앱 $nprob 개에 확인할 점 (위 └ 줄)" "태그는 저장 번호로 · 창고는 $REGISTRY · readinessProbe · resources · nodeSelector $ROLE_LABEL (가이드 서비스 카드)"
+fi
+# Service 가 파드를 못 찾는지 (selector · 포트 이름 · 준비 상태)
+noep=$(k get endpoints -A --no-headers 2>/dev/null | awk -v sys="$SYS_NS" -v skip="$skip_ns" '$1 !~ sys && index(skip, " "$1" ")==0 && $3=="<none>" {print $1"/"$2}')
+withsel=$(k get svc -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.selector}{"\n"}{end}' | awk -F'\t' '$2!="" {print $1}')
+noep=$(for s in $noep; do echo "$withsel" | grep -qx "$s" && echo "$s"; done)
+if [ -n "$noep" ]; then bad "가리키는 파드가 없는(준비 안 된) Service: $(echo $noep)" "Service 의 selector 가 파드 라벨과 같은지 · targetPort 가 컨테이너 포트와 같은지 · 파드가 준비 됐는지"
+elif [ -n "$apps" ]; then ok "앱 Service 모두 파드와 연결됨"; fi
+# Ingress 가 없는 Service 를 가리키는지
+svcs=$(k get svc -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}')
+miss=$(k get ingress -A -o jsonpath='{range .items[*]}{range .spec.rules[*].http.paths[*]}{"\t"}{.backend.service.name}{end}{"\t"}{.metadata.namespace}{"\n"}{end}' \
+  | awk -F'\t' '{ns=$NF; for (i=2;i<NF;i++) if ($i!="") print ns"/"$i}' | sort -u | while read -r b; do echo "$svcs" | grep -qx "$b" || echo "$b"; done)
+[ -n "$miss" ] && bad "Ingress 가 가리키는데 없는 Service: $(echo $miss)" "Ingress 의 backend.service.name 을 실제 Service 이름으로"
 
 raw workloads kubectl get deploy,sts,ds -A -o wide
 raw services kubectl get svc -A -o wide

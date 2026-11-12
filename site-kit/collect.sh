@@ -113,6 +113,7 @@ mask() {
     -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----.*-----END [A-Z ]*PRIVATE KEY-----/*** 개인키 가림 ***/' \
     -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\    *** 개인키 가림 ***' \
     -e 's#(://[^:/@[:space:]]+:)[^@/[:space:]]+@#\1***@#g' \
+    -e 's/(login[^#]*[[:space:]](-p|--password)[ =])[^[:space:]]+/\1***/g; s/(--password[ =])[^[:space:]]+/\1***/g; s/(-creds[ =][^:[:space:]]+:)[^[:space:]]+/\1***/g' \
     -e 's/\bAKIA[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-(ant-|proj-)?[A-Za-z0-9_-]{20,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bAIza[0-9A-Za-z_-]{30,}|\bglpat-[A-Za-z0-9_-]{20,}|\beyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}/***/g'
 }
 T()    { timeout 120 "$@"; }
@@ -149,6 +150,17 @@ collect_node() {
   save $d/containers.txt    bash -c 'crictl ps 2>/dev/null | head -80; echo; crictl images 2>/dev/null | head -150'
   save $d/gpu.txt           bash -c 'nvidia-smi 2>/dev/null || echo "(nvidia-smi 없음)"; echo; nvidia-smi -L 2>/dev/null; lsmod 2>/dev/null | grep -i nvidia'
   save $d/services.txt      bash -c 'systemctl list-units --type=service --state=running --no-pager 2>/dev/null | head -80'
+  # 빌드 · 배포 도구 (이 서버에서 도는 것 · 있는 명령) · 배포 스크립트 (이미지를 containerd 에 넣기 · 창고로 보내기 · 쿠버에 올리기)
+  local CI_PAT='jenkins|teamcity|buildAgent|gitlab|gitea|tekton|drone|woodpecker|harbor|nexus|sonarqube|argo-workflows|buildkit|kaniko|svnserve'
+  local DEPLOY_PAT='ctr .*(images?|i) +import|nerdctl .*(load|push)|(docker|podman) +(save|load|push)|skopeo +copy|kubectl .*(apply|set +image|rollout|create +-f)|helm +(upgrade|install)|argocd +app'
+  HOST_CI=$( { ps -eo args 2>/dev/null; systemctl list-units --type=service --state=running --no-pager 2>/dev/null; docker ps --format '{{.Image}} {{.Names}}' 2>/dev/null; podman ps --format '{{.Image}} {{.Names}}' 2>/dev/null; } \
+    | grep -vF 'jenkins|teamcity' | grep -ioE "$CI_PAT" | tr 'A-Z' 'a-z' | sort -u | paste -sd' ' -)
+  HOST_TOOLS=""; local t; for t in docker podman nerdctl ctr crictl skopeo buildah helm kustomize argocd svn git mvn java node python3; do have $t && HOST_TOOLS="$HOST_TOOLS $t"; done
+  HOST_SCRIPTS=$(for x in /root /home /opt /data /app /apps /deploy /srv /work /svn /usr/local/bin; do [ -d "$x" ] && find "$x" -maxdepth 4 -type f \( -name '*.sh' -o -name '*.bash' -o -name 'Jenkinsfile*' -o -name 'Makefile' \) -size -256k 2>/dev/null; done \
+    | grep -vE '/(\.git|\.svn|node_modules|\.cache|\.local|snap|go/pkg|\.m2)/|/(collect|cluster-check|bundle-check)-[0-9]' | head -3000 | while read -r f; do grep -q 'DEPLOY_PAT=\|SECRET_WORDS=' "$f" 2>/dev/null || grep -lE "$DEPLOY_PAT" "$f" 2>/dev/null; done | head -40)
+  { echo "이 서버에서 도는 빌드 · 배포 도구: ${HOST_CI:-없음}"; echo "있는 명령:${HOST_TOOLS:- 없음}"; echo; echo "배포 스크립트 (찾은 곳: /root /home /opt /data /app /deploy /srv /work, 4단계):"
+    echo "${HOST_SCRIPTS:-(없음)}" | while read -r f; do [ -f "$f" ] && echo "  $f — $(grep -ohE "$DEPLOY_PAT" "$f" | cut -c1-60 | sort -u | paste -sd',' -)"; done; } > "$OUT/$d/deploy-tools.txt"
+  if [ -n "$HOST_SCRIPTS" ]; then mkdir -p "$OUT/$d/deploy-scripts"; echo "$HOST_SCRIPTS" | while read -r f; do mask < "$f" > "$OUT/$d/deploy-scripts/$(echo "$f" | sed 's#^/##; s#/#_#g')"; done; fi
 
   head_ "이 서버 ($HOST)"
   sum "  OS        : $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-?}") · 커널 $(uname -r)"
@@ -164,6 +176,8 @@ collect_node() {
   df -h -x tmpfs -x devtmpfs -x overlay 2>/dev/null | awk 'NR>1' | sort -k5 -rn | head -5 | sed 's/^/    /' >> "$SUM"
   sum "  NFS 마운트: $(mount | grep -cEi ' type nfs') 개"
   sum "  미러 설정(registries.yaml): $( [ -f $RCONF/registries.yaml ] && { awk '/^mirrors:/{m=1;next} /^[^ ]/{m=0} m && /^  [^ -]/ && /:[[:space:]]*$/{r=$1; gsub(/"/,"",r); sub(/:$/,"",r)} m && /https?:\/\//{match($0,/https?:\/\/[^" ]+/); printf "%s → %s  ", r, substr($0,RSTART,RLENGTH)}' $RCONF/registries.yaml; echo; } || echo 없음)"
+  sum "  빌드 · 배포 도구(이 서버에서 도는 것): ${HOST_CI:-없음} · 있는 명령:${HOST_TOOLS:- 없음}"
+  sum "  배포 스크립트: $( [ -n "$HOST_SCRIPTS" ] && echo "$(echo "$HOST_SCRIPTS" | wc -l) 개 (node/deploy-tools.txt · 사본 node/deploy-scripts/)" || echo "못 찾음")"
   if have nvidia-smi; then sum "  GPU       : $(nvidia-smi -L 2>/dev/null | wc -l) 장 · 드라이버 $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"; fi
   if [ -n "$NFS_SERVER" ]; then sum "  스토리지 NFS $NFS_SERVER:2049 → $(tcp "$NFS_SERVER" 2049)"; fi
 }
@@ -201,6 +215,9 @@ if [ "$MODE" = cluster ]; then
   save workloads/statefulsets.yaml kubectl get sts -A -o yaml
   save workloads/daemonsets.yaml  kubectl get ds -A -o yaml
   save workloads/jobs.yaml        kubectl get cronjobs,jobs -A -o yaml
+  save workloads/managers.tsv     kubectl get deploy,sts,ds -A --show-managed-fields -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.kind}{"\t"}{.metadata.name}{"\t"}{.status.readyReplicas}{"/"}{.spec.replicas}{"\t"}{range .spec.template.spec.containers[*]}{.image}{"|"}{.readinessProbe.periodSeconds}{"|"}{.resources.limits.memory}{.resources.requests.memory}{"|"}{.imagePullPolicy}{" "}{end}{"\t"}{.spec.template.spec.nodeSelector}{"\t"}{range .metadata.managedFields[*]}{.manager}{","}{end}{"\n"}{end}'
+  save gitops/argocd.yaml         kubectl get applications.argoproj.io,applicationsets.argoproj.io,appprojects.argoproj.io -A -o yaml
+  save gitops/flux.yaml           kubectl get gitrepositories.source.toolkit.fluxcd.io,kustomizations.kustomize.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io -A -o yaml
   save workloads/pods-describe-problem.txt bash -c 'kubectl get pods -A --no-headers | awk '"'"'$4!="Running" && $4!="Completed" {print $1" "$2}'"'"' | head -30 | while read ns p; do echo "===== $ns/$p"; kubectl -n $ns describe pod $p | tail -40; done'
   save network/services.yaml      kubectl get svc -A -o yaml
   save network/services-wide.txt  kubectl get svc -A -o wide
@@ -332,6 +349,28 @@ if [ "$MODE" = cluster ]; then
   detect "cert-manager"                  "cert-manager"
   detect "스토리지 공급자(NFS · Longhorn 등)" "nfs-subdir|csi-nfs|nfs-provisioner|longhorn|local-path"
   detect "백업 Velero"                   "velero"
+
+  head_ "배포 방식 (무엇으로 올리고 있나)"
+  if echo "$crds" | grep -q "applications.argoproj.io"; then
+    apps=$(k get applications.argoproj.io -A -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.source.repoURL}{.spec.sources[0].repoURL}{"\t"}{.spec.source.path}{.spec.source.chart}{.spec.sources[0].path}{.spec.sources[0].chart}{"\t"}{.spec.source.targetRevision}{.spec.sources[0].targetRevision}{"\t"}{.spec.destination.namespace}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' | mask)
+    sum "  ArgoCD: Application $(echo -n "$apps" | grep -c .) 개 (이름 ← 저장소 경로@브랜치 → 네임스페이스 · 동기화 · 상태)"
+    echo "$apps" | head -40 | awk -F'\t' 'NF>1{printf "    %s ← %s %s@%s → %s · %s · %s\n", $1, $2, $3, ($4==""?"HEAD":$4), ($5==""?"-":$5), $6, $7}' >> "$SUM"
+  else sum "  ArgoCD: 없음"; fi
+  echo "$crds" | grep -q "kustomize.toolkit.fluxcd.io" && sum "  Flux: Kustomization $(k get kustomizations.kustomize.toolkit.fluxcd.io -A --no-headers | wc -l) 개"
+  ci=$(echo "$pods_live" | grep -iE 'jenkins|teamcity|gitlab|gitea|tekton|drone|woodpecker|harbor|nexus|sonarqube|argo-workflows|buildkit|kaniko|svnserve' | awk '{print "    "$1"/"$2"  "$4}')
+  sum "  클러스터 안의 빌드 · 배포 서버:"; sum "${ci:-    없음}"
+  sum "  앱 (시스템 네임스페이스 빼고 · 준비 · 이미지 · 올린 방법 — kubectl 손작업 / ArgoCD / Helm / Rancher 화면):"
+  awk -F'\t' '$1 !~ /^(kube-|cattle-|fleet-|rancher|cnpg-system|calico|tigera|metallb|longhorn|gpu-operator|nvidia|cert-manager|argocd|ingress|traefik|monitoring|local-path|velero|kubernetes-dashboard|strimzi|istio|linkerd|cilium|keda|external-secrets|sealed-secrets|kyverno|gatekeeper|ci$|cicd)/ && NF>3 {
+      n = split($7, a, ","); how = ""; delete seen
+      for (i = 1; i <= n; i++) { x = a[i]
+        if (x ~ /^kubectl-client-side-apply|^kubectl$|^kubectl-apply/) x = "kubectl apply"; else if (x ~ /^kubectl-create/) x = "kubectl create"
+        else if (x ~ /^kubectl-edit/) x = "kubectl edit"; else if (x ~ /^kubectl-set/) x = "kubectl set image"; else if (x ~ /^kubectl-(rollout|patch)/) x = "kubectl rollout/patch"
+        else if (x ~ /argocd/) x = "ArgoCD"; else if (x ~ /^helm/) x = "Helm"; else if (x ~ /^(rancher|steve|Mozilla|agent)/) x = "Rancher 화면"
+        else if (x ~ /kustomize-controller|helm-controller/) x = "Flux"; else if (x ~ /^deploy@/) x = "서버 자동 설치 폴더"; else continue
+        if (!(x in seen)) { seen[x] = 1; how = how (how == "" ? "" : "+") x } }
+      split($4, rr, "/"); img = $5; gsub(/\|[^ ]*/, "", img)
+      printf "    %s/%s  준비 %s/%s  %s ← %s\n", $1, $3, (rr[1] == "" ? 0 : rr[1]), rr[2], img, (how == "" ? "알 수 없음" : how) }' "$OUT/workloads/managers.tsv" | head -60 > "$OUT/workloads/apps-how.txt"
+  if [ -s "$OUT/workloads/apps-how.txt" ]; then cat "$OUT/workloads/apps-how.txt" >> "$SUM"; else sum "    없음 — 앱이 아직 한 번도 안 올라감"; fi
 
   head_ "네임스페이스별 파드 (전체 / Running / 그 밖)"
   echo "$pods_all" | awk '{t[$1]++; if($4=="Running"||$4=="Completed") r[$1]++; else b[$1]++} END{for(n in t) printf "  %-28s %4d %4d %4d\n", n, t[n], r[n]+0, b[n]+0}' | sort >> "$SUM"

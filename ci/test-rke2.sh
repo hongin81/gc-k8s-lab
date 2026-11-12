@@ -44,12 +44,12 @@ python3 "$REPO/site-kit/check-bundle.py" /opt/deploy/gc-app-deploy --env /tmp/si
 
 echo "== 5. 비밀값이 새지 않았나 (모든 결과)"
 for leak in leaktoken-rke2-7f3a9c leakagent-rke2-2b8d1e regpass-leak-999 miniopass-leak-555 plainenv-leak-444 helmpass-leak-333 \
-            bundlesecret-leak-222 secretvalue-leak-111 cmtoken-leak-666; do
+            bundlesecret-leak-222 secretvalue-leak-111 cmtoken-leak-666 deploylogin-leak-777; do
   if grep -rqF -- "$leak" $R /root/collect-* /root/cluster-check-* /root/bundle-check-* 2>/dev/null; then
     bad "새어 나옴: $leak  ($(grep -rlF -- "$leak" $R | head -3 | tr '\n' ' '))"
   fi
 done
-[ $fail = 0 ] && echo "  가짜 비밀번호 9가지 — 어디에도 없음"
+[ $fail = 0 ] && echo "  가짜 비밀번호 10가지 — 어디에도 없음"
 
 echo "== 6. 요약이 RKE2 를 제대로 읽었나"
 S=$D/00-summary.txt
@@ -70,4 +70,18 @@ grep -q "docker.io → http://infra01:5000" $S || bad "구성 수집: 미러 대
 grep -q "Gi" <(grep -A3 "이름 .*역할라벨" $S) || bad "구성 수집: 메모리가 Gi 로 안 바뀜"
 grep -q "이 서버 미러 설정" $R/check-cluster-report.txt || bad "클러스터 점검: 미러 설정 확인 안 됨"
 grep -q "^정상 [0-9]* · 문제 0$" $R/check-bundle-console.txt || bad "배포 묶음 점검: 문제가 나옴"
+
+echo "== 7. 배포 방식 (아르고CD · 작업 서버 스크립트 · 앱을 올린 방법)"
+C=$R/check-cluster-report.txt
+for want in "ArgoCD 있음 — Application 1 개" "guestbook ← https://github.com/argoproj/argocd-example-apps.git guestbook@HEAD → guestbook" \
+            "/root/deploy/push-images.sh  — ctr import(containerd 에 직접)" "이 서버에 있는 명령:" "sample/sample-api  준비 " "← kubectl apply" \
+            "guestbook/guestbook-ui" "← ArgoCD"; do
+  grep -qF -- "$want" $C || bad "클러스터 점검에 없음: $want"
+done
+grep -A1 "sample/sample-" $C | grep -q "└ 확인" && bad "클러스터 점검: 샘플 앱에 확인할 점이 나옴"
+for want in "ArgoCD: Application 1 개" "← ArgoCD" "sample/sample-api  준비 " "배포 스크립트:"; do
+  grep -qF -- "$want" $S || bad "구성 수집 요약에 없음: $want"
+done
+grep -q "push-images.sh" $D/node/deploy-tools.txt || bad "구성 수집: 작업 서버 배포 스크립트 못 찾음"
+ls $D/node/deploy-scripts/root_deploy_push-images.sh >/dev/null 2>&1 || bad "구성 수집: 배포 스크립트 사본 없음"
 [ $fail = 0 ] && echo "RKE2 시험 통과" || { echo "RKE2 시험 실패"; exit 1; }

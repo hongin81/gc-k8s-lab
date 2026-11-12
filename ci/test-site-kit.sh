@@ -13,6 +13,10 @@ for want in "정상      gc-lab-worker Ready" "정상      gc-lab-worker2 lab.io
             "DB 주소 db-general-rw" "data-db 있음"; do
   grep -qF "$want" "$R/report.txt" || { echo "점검 결과에 없음: $want"; exit 1; }
 done
+for want in "[15] 배포 방식" "ArgoCD 없음" "sample/sample-api  준비 " "← kubectl apply" "앱 Service 모두 파드와 연결됨"; do
+  grep -qF "$want" "$R/report.txt" || { echo "점검 결과에 없음: $want"; exit 1; }
+done
+if grep -A1 "sample/sample-" "$R/report.txt" | grep -q "└ 확인"; then echo "샘플 앱에 확인할 점이 나옴"; exit 1; fi
 ls /root/cluster-check-*.tar.gz >/dev/null
 echo "점검 스크립트 정상"
 

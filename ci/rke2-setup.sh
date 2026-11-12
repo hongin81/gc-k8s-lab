@@ -151,7 +151,31 @@ bash /opt/deploy/gc-app-deploy/scripts/create-tls.sh /tmp/tls.crt /tmp/tls.key
 kubectl apply -k /opt/deploy/gc-app-deploy/k8s/services/sample
 kubectl -n sample create configmap leak-cm --from-literal=API_TOKEN=cmtoken-leak-666 --from-literal=TZ=Asia/Seoul
 
-say "9. 모두 뜰 때까지"
+say "9. 아르고CD + 앱 하나 (배포 방식 감지 시험)"
+kubectl create ns argocd >/dev/null
+for i in 1 2 3; do kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml >/dev/null && break; sleep 10; done
+waitfor 60 kubectl -n argocd rollout status deploy/argocd-repo-server --timeout=5s || true
+cat <<'EOF' | kubectl apply -f -
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: { name: guestbook, namespace: argocd }
+spec:
+  project: default
+  source: { repoURL: "https://github.com/argoproj/argocd-example-apps.git", path: guestbook, targetRevision: HEAD }
+  destination: { server: "https://kubernetes.default.svc", namespace: guestbook }
+  syncPolicy: { automated: {}, syncOptions: [CreateNamespace=true] }
+EOF
+# 작업 서버에 있는 배포 스크립트 (이미지를 서버 containerd 에 직접 넣는 방식 · 로그인 비밀번호 심기)
+mkdir -p /root/deploy && cat > /root/deploy/push-images.sh <<'EOF'
+#!/bin/bash
+docker login -u deploy -p deploylogin-leak-777 infra01:5000
+docker save -o /tmp/app.tar lab/sample-api:t1
+ctr -n k8s.io images import /tmp/app.tar
+kubectl -n sample set image deploy/sample-api sample-api=lab/sample-api:t1
+EOF
+
+say "10. 모두 뜰 때까지"
+waitfor 60 bash -c "kubectl -n guestbook get deploy guestbook-ui" || true
 waitfor 120 bash -c "kubectl -n data-db get cluster db-general -o jsonpath='{.status.phase}' | grep -qi healthy" || true
 waitfor 120 bash -c "kubectl -n data-kafka get kafka signal-kafka -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' | grep -q True" || true
 kubectl -n sample rollout status deploy/sample-web --timeout=5m || true
