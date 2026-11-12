@@ -1,37 +1,42 @@
 #!/usr/bin/env bash
-# 쿠버 클러스터 구성 수집 (읽기 전용) — 클러스터 구성을 있는 그대로 상세하게 모아 파일 하나로 묶는다.
+# 쿠버 클러스터 구성 수집 — 클러스터 구성을 있는 그대로 모아 파일 하나로 묶는다. 읽기만 한다.
 #
-# 사용 (root):
-#   bash collect.sh                 작업 서버(관리 서버)에서 — 클러스터 전체 + 이 서버
-#   bash collect.sh --node          그 밖의 서버에서 — 그 서버 정보만 (선택, 인프라 담당)
-#   bash collect.sh --bundle <폴더>  배포 묶음 위치를 직접 지정 (기본: 아래 BUNDLE_DIR)
-# 결과: <OUT_DIR>/collect-<서버>-<일시>.tar.gz  ← 이 파일 하나를 보내면 됨
+# 쓰는 법 (root 로):
+#   bash collect.sh            작업 서버(관리 서버)에서 — 클러스터 전체 + 이 서버.  보통은 이것만.
+#   bash collect.sh --node     그 밖의 서버에서 — 그 서버 정보만 (선택, 인프라 담당)
+#   bash collect.sh --bundle <폴더>   SVN 배포 묶음 위치가 기본값과 다를 때
+#   bash collect.sh --yes      시작 확인(Enter) 없이 바로
+# 결과: 마지막에 "보낼 파일" 로 나오는 .tar.gz 하나
 #
 # 지키는 것:
-#   - 읽기만 한다 (kubectl get/describe/top, curl GET, 파일 읽기). 아무것도 만들거나 바꾸지 않는다.
-#   - Secret 은 이름 · 종류 · 키 이름만. 값은 꺼내지 않는다. kubeconfig 는 가져오지 않는다.
+#   - 읽기만 한다 (조회 · 파일 읽기). 아무것도 만들거나 바꾸지 않는다.
+#   - Secret 은 이름 · 종류 · 키 이름만 본다. 값과 kubeconfig 는 가져오지 않는다.
 #   - 비밀번호 · 토큰 · 키처럼 보이는 값은 모두 *** 로 가린다.
 #   - 배포 묶음에서 비밀값 파일(*.env — 서식 *.example.env 제외)과 개인키는 빼고 가져온다.
+#   - 비밀번호를 묻지 않는다.
 set -uo pipefail
 
-# ==== 현장 값 시작 (실제와 다르면 여기만 고침) ====
-DOMAIN="ai.lab.example"
-INGRESS_VIP="127.0.0.1"
-L4_VIP=""
-REGISTRY="localhost:5000"
-ROLE_LABEL="lab.io/role"
-NFS_SERVER=""
-EXTRA_TCP=""
-BUNDLE_DIR="/opt/deploy/gc-app-deploy"
-OUT_DIR="/root"
-# ==== 현장 값 끝 ====
+# ==== 서버 주소 설정 시작 — 받은 그대로 쓰면 됨 (주소가 바뀐 경우에만 고침) ====
+DOMAIN="ai.lab.example"                  # 대표 도메인
+INGRESS_VIP="127.0.0.1"                  # 입구 가상 주소 (Traefik)
+L4_VIP=""                                # L4 (부하분산 장비)
+REGISTRY="localhost:5000"                # 이미지 창고 주소:포트
+ROLE_LABEL="lab.io/role"                 # 서버 역할 라벨 이름
+NFS_SERVER=""                            # 스토리지(NFS) 주소
+EXTRA_TCP=""                             # 그 밖에 연결을 확인할 주소:포트 (공백으로 여러 개)
+WORK_SERVER=""                           # 이 작업 서버에 접속하는 주소 (마지막 안내 문구용)
+BUNDLE_DIR="/opt/deploy/gc-app-deploy"   # SVN 배포 묶음을 둔 곳
+OUT_DIR="/root"                          # 결과 파일을 만들 곳
+# ==== 서버 주소 설정 끝 ====
 
 MODE=cluster
+YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --node) MODE=node ;;
+    --yes|-y) YES=1 ;;
     --bundle) BUNDLE_DIR=${2:-}; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
   esac
   shift
 done
@@ -41,6 +46,40 @@ done
 [ -z "${CRI_CONFIG_FILE:-}" ] && [ -f /var/lib/rancher/rke2/agent/etc/crictl.yaml ] && export CRI_CONFIG_FILE=/var/lib/rancher/rke2/agent/etc/crictl.yaml
 
 HOST=$(hostname)
+line() { printf '%s\n' "════════════════════════════════════════════════════════════"; }
+
+if [ "$(id -u)" != 0 ]; then
+  echo "root 로 실행해야 합니다:  sudo bash $0 $*"
+  exit 1
+fi
+if [ "$MODE" = cluster ] && ! timeout 15 kubectl get --raw /version >/dev/null 2>&1; then
+  line
+  echo " 이 서버($HOST)에서는 쿠버 관리 권한(kubectl)이 없습니다."
+  echo " 클러스터 전체를 모으려면 작업 서버${WORK_SERVER:+ ($WORK_SERVER)} 에서 돌려 주세요."
+  echo " 이 서버 정보만 모으려면:  bash $0 --node"
+  line
+  exit 1
+fi
+
+line
+echo " 쿠버 구성 수집 — 읽기만 합니다 (아무것도 만들거나 바꾸지 않음)"
+if [ "$MODE" = cluster ]; then
+  echo " 모으는 것: 클러스터 전체(서버 · 설치된 구성 요소 · 설정 · 경로 · 스토리지 · DB · 카프카 ·"
+  echo "            이미지 창고 · 연결 시험) + 이 서버 정보 + SVN 배포 묶음(있으면)"
+  echo " 걸리는 시간: 1~3분"
+else
+  echo " 모으는 것: 이 서버($HOST) 정보만 (OS · 디스크 · 네트워크 · 미러 설정 · GPU 등)"
+  echo " 걸리는 시간: 30초 정도"
+fi
+echo " 비밀번호를 묻지 않습니다. 비밀값은 가져오지 않고, 비밀번호처럼 보이는 값은 *** 로 가립니다."
+echo
+echo " 쓰는 주소 (주소가 바뀐 경우에만 이 파일 맨 위 '서버 주소 설정' 을 고치세요)"
+printf '   %-16s %s\n' "대표 도메인" "${DOMAIN:-없음}" "입구 가상 주소" "${INGRESS_VIP:-없음}" "L4" "${L4_VIP:-없음}" \
+  "이미지 창고" "${REGISTRY:-없음}" "스토리지(NFS)" "${NFS_SERVER:-없음}" "배포 묶음 위치" "$BUNDLE_DIR $( [ -d "$BUNDLE_DIR" ] && echo '(있음)' || echo '(없음 — 건너뜀)')"
+line
+if [ "$YES" != 1 ] && [ -t 0 ]; then
+  read -r -p "시작하려면 Enter, 그만두려면 Ctrl+C: " _
+fi
 NAME=collect-$HOST-$(date +%Y%m%d-%H%M%S)
 OUT=$OUT_DIR/$NAME
 mkdir -p "$OUT"
@@ -69,7 +108,7 @@ head_() { sum ""; sum "■ $*"; }
 k()    { T kubectl "$@" 2>/dev/null; }
 tcp()  { timeout 4 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && echo 열림 || echo 닫힘; }
 
-echo "구성 수집 시작 — $HOST ($MODE) · 읽기만 합니다"
+STEPS=$( [ "$MODE" = cluster ] && echo 4 || echo 2 )
 sum "구성 수집 결과 — $(date '+%Y-%m-%d %H:%M:%S') · 서버 $HOST · 방식 $MODE"
 sum "읽기만 했고, Secret 값 · kubeconfig 는 가져오지 않았으며, 비밀번호처럼 보이는 값은 *** 로 가렸습니다."
 
@@ -77,7 +116,7 @@ sum "읽기만 했고, Secret 값 · kubeconfig 는 가져오지 않았으며, �
 # 이 서버 정보 (두 방식 공통)
 # ════════════════════════════════════════════════════════════
 collect_node() {
-  echo "  - 이 서버 정보"
+  echo "[1/$STEPS] 이 서버($HOST) 정보 모으는 중..."
   local d=node
   save $d/os.txt            bash -c 'cat /etc/os-release; echo; uname -a; echo; uptime'
   save $d/cpu-mem.txt       bash -c 'nproc; echo; free -h; echo; lscpu 2>/dev/null | head -20'
@@ -122,7 +161,7 @@ if [ "$MODE" = cluster ]; then
 fi
 
 if [ "$MODE" = cluster ]; then
-  echo "  - 클러스터 정보 (1~2분)"
+  echo "[2/$STEPS] 클러스터 정보 모으는 중... (1~2분)"
   # 원본 자료 ───────────────────────────────────────────
   save cluster/version.txt        kubectl version
   save cluster/nodes-wide.txt     kubectl get nodes -o wide --show-labels
@@ -202,7 +241,7 @@ if [ "$MODE" = cluster ]; then
 
   # 배포 묶음 (SVN 사본) ─────────────────────────────────
   if [ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ]; then
-    echo "  - 배포 묶음 $BUNDLE_DIR"
+    echo "[3/$STEPS] 배포 묶음 $BUNDLE_DIR 모으는 중..."
     mkdir -p "$OUT/bundle/files" "$OUT/bundle/rendered"
     ( cd "$BUNDLE_DIR" && find . -type f ! -path './.svn/*' ! -path './.git/*' ! -path './evidence/*' | sort ) > "$OUT/bundle/files.txt"
     ( cd "$BUNDLE_DIR" && (svn info 2>/dev/null || git log -1 2>/dev/null || echo "(svn · git 정보 없음)") ) | mask > "$OUT/bundle/version.txt"
@@ -223,7 +262,8 @@ if [ "$MODE" = cluster ]; then
   fi
 
   # ── 요약 ────────────────────────────────────────────
-  echo "  - 요약 만들기"
+  [ -d "$BUNDLE_DIR" ] || echo "[3/$STEPS] 배포 묶음 $BUNDLE_DIR 없음 — 건너뜀"
+  echo "[4/$STEPS] 요약 만드는 중..."
   rl=${ROLE_LABEL//./\\.}
   head_ "쿠버 · 서버"
   sum "  쿠버 버전: $(k get --raw /version | grep -o '"gitVersion": *"[^"]*"' | cut -d'"' -f4) · 서버 $(k get nodes --no-headers | wc -l) 대"
@@ -335,9 +375,20 @@ fi
 # ── 묶기 ────────────────────────────────────────────────
 sum ""
 sum "자세한 원본: 이 파일과 같은 폴더의 cluster/ workloads/ network/ storage/ config/ operators/ events/ metrics/ registry/ bundle/ node/"
+[ "$MODE" = node ] && echo "[2/$STEPS] 묶는 중..."
 tar -C "$OUT_DIR" -czf "$OUT.tar.gz" "$NAME" 2>/dev/null
 echo
-cat "$SUM" | head -60
-echo "  ... (요약 전체: $SUM)"
+sed -n '1,45p' "$SUM"
+echo "  ... (요약 전체는 결과 파일 안 00-summary.txt)"
 echo
-echo "보낼 파일: $OUT.tar.gz  ($(du -h "$OUT.tar.gz" | cut -f1))"
+ADDR=${WORK_SERVER:-$(hostname -I 2>/dev/null | awk '{print $1}')}
+line
+echo " 끝났습니다. 아래 파일 하나를 보내 주세요."
+echo
+echo "   보낼 파일:  $OUT.tar.gz  ($(du -h "$OUT.tar.gz" | cut -f1))"
+echo
+echo " 가져오는 법 — 이 서버에 접속했던 컴퓨터(VPN 컴퓨터)의 명령 창에서:"
+echo "   scp root@${ADDR}:$OUT.tar.gz ."
+echo
+echo " 비밀번호 · 비밀값은 들어 있지 않습니다. 내부 주소가 들어 있으니 사내 메일로 보내 주세요."
+line

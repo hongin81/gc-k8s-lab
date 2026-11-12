@@ -37,7 +37,7 @@ cp /tmp/leak.key $B/k8s/services/sample/server.key
 
 echo "== 수집 (작업 서버 방식)"
 rm -rf /root/collect-*
-bash "$REPO/site-kit/collect.sh" --bundle $B || fail "수집 스크립트 실패"
+bash "$REPO/site-kit/collect.sh" --yes --bundle $B || fail "수집 스크립트 실패"
 TGZ=$(ls /root/collect-*.tar.gz | head -1); [ -n "$TGZ" ] || fail "결과 파일 없음"
 X=/tmp/collect-x; rm -rf $X; mkdir -p $X; tar -C $X -xzf "$TGZ"; D=$(ls -d $X/collect-*)
 
@@ -63,7 +63,7 @@ echo "  요약 · 원본 정상"
 
 echo "== 수집 (다른 서버 방식 --node)"
 rm -rf /root/collect-*
-bash "$REPO/site-kit/collect.sh" --node || fail "--node 실패"
+bash "$REPO/site-kit/collect.sh" --yes --node || fail "--node 실패"
 ls /root/collect-*.tar.gz >/dev/null || fail "--node 결과 파일 없음"
 
 kubectl delete ns leaktest --wait=false >/dev/null
