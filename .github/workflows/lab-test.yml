@@ -22,6 +22,9 @@ jobs:
       - name: 배포 묶음 점검 시험 (정상 묶음 · 일부러 틀린 묶음 9가지)
         run: sudo bash ci/test-bundle-check.sh
 
+      - name: 소스 수집 시험 (리눅스)
+        run: bash ci/test-scan-source.sh
+
       - name: 구성 수집 시험 (가짜 비밀번호가 새지 않는지)
         run: sudo bash ci/test-collect.sh
 
@@ -48,3 +51,24 @@ jobs:
           sudo kubectl get pods -A -o wide || true
           sudo kubectl -n sample get events --sort-by=.lastTimestamp | tail -40 || true
           sudo kubectl -n sample describe pods | tail -120 || true
+
+  source-scan-windows:
+    # 개발 PC 가 윈도우일 때도 소스 수집이 도는지
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 소스 수집 (윈도우)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force C:\work | Out-Null
+          Copy-Item -Recurse $env:GITHUB_WORKSPACE C:\work\gc-k8s-lab
+          Remove-Item -Recurse -Force C:\work\gc-k8s-lab\ci
+          Set-Location C:\work
+          node $env:GITHUB_WORKSPACE\site-kit\scan-source.mjs C:\work
+          $f = Get-ChildItem C:\work\source-scan-*.txt | Select-Object -First 1
+          if (-not $f) { throw "결과 파일 없음" }
+          $t = Get-Content $f.FullName -Raw -Encoding utf8
+          foreach ($w in @("스프링부트 실행 jar", "sample-api", "Dockerfile.was", "lab/gc-app-deploy/build/Dockerfile.was", "Git ·")) {
+            if (-not $t.Contains($w)) { throw "못 잡음: $w" }
+          }
+          Write-Host "윈도우 소스 수집 시험 통과"

@@ -74,8 +74,12 @@ fi
 echo " 비밀번호를 묻지 않습니다. 비밀값은 가져오지 않고, 비밀번호처럼 보이는 값은 *** 로 가립니다."
 echo
 echo " 쓰는 주소 (주소가 바뀐 경우에만 이 파일 맨 위 '서버 주소 설정' 을 고치세요)"
-printf '   %-16s %s\n' "대표 도메인" "${DOMAIN:-없음}" "입구 가상 주소" "${INGRESS_VIP:-없음}" "L4" "${L4_VIP:-없음}" \
-  "이미지 창고" "${REGISTRY:-없음}" "스토리지(NFS)" "${NFS_SERVER:-없음}" "배포 묶음 위치" "$BUNDLE_DIR $( [ -d "$BUNDLE_DIR" ] && echo '(있음)' || echo '(없음 — 건너뜀)')"
+echo "   대표 도메인     : ${DOMAIN:-없음}"
+echo "   입구 가상 주소  : ${INGRESS_VIP:-없음}"
+echo "   L4              : ${L4_VIP:-없음}"
+echo "   이미지 창고     : ${REGISTRY:-없음}"
+echo "   스토리지(NFS)   : ${NFS_SERVER:-없음}"
+echo "   배포 묶음 위치  : $BUNDLE_DIR $( [ -d "$BUNDLE_DIR" ] && echo '(있음)' || echo '(없음 — 건너뜀)')"
 line
 if [ "$YES" != 1 ] && [ -t 0 ]; then
   read -r -p "시작하려면 Enter, 그만두려면 Ctrl+C: " _
@@ -138,8 +142,10 @@ collect_node() {
   head_ "이 서버 ($HOST)"
   sum "  OS        : $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-?}") · 커널 $(uname -r)"
   sum "  CPU · 메모리: $(nproc) 코어 · $(free -h 2>/dev/null | awk '/^Mem/{print $2" (사용 "$3")"}')"
-  sum "  RKE2      : $(rke2 --version 2>/dev/null | head -1 || echo 없음) · 서비스 $(systemctl is-active rke2-server 2>/dev/null || systemctl is-active rke2-agent 2>/dev/null || echo ?)"
-  sum "  시간 동기화: $(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo ?) · 방화벽 firewalld $(systemctl is-active firewalld 2>/dev/null || echo ?)"
+  local r2=없음; systemctl is-active --quiet rke2-server 2>/dev/null && r2="rke2-server 실행 중"; systemctl is-active --quiet rke2-agent 2>/dev/null && r2="rke2-agent 실행 중"
+  sum "  RKE2      : $(rke2 --version 2>/dev/null | head -1 | grep . || echo 없음) · 서비스 $r2"
+  local fw=꺼짐; systemctl is-active --quiet firewalld 2>/dev/null && fw=켜짐
+  sum "  시간 동기화: $(timedatectl show -p NTPSynchronized --value 2>/dev/null | grep . || echo 알수없음) · 방화벽(firewalld) $fw"
   sum "  디스크(사용률 높은 순):"
   df -h -x tmpfs -x devtmpfs -x overlay 2>/dev/null | awk 'NR>1' | sort -k5 -rn | head -5 | sed 's/^/    /' >> "$SUM"
   sum "  NFS 마운트: $(mount | grep -cEi ' type nfs') 개"
@@ -283,7 +289,7 @@ if [ "$MODE" = cluster ]; then
     elif [ -n "$crd" ] && echo "$crds" | grep -qiE "$crd"; then sum "  일부  $label — 종류(CRD)만 있고 파드 없음"
     else sum "  없음  $label"; fi
   }
-  detect "네트워크(CNI)"                 "canal|calico|cilium|flannel|kube-ovn"
+  detect "네트워크(CNI)"                 "canal|calico|cilium|flannel|kube-ovn|kindnet"
   detect "CoreDNS"                       "coredns"
   detect "입구 Traefik"                  "traefik"
   detect "입구 ingress-nginx"            "ingress-nginx|nginx-ingress"
