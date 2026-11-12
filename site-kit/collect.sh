@@ -157,11 +157,13 @@ collect_node() {
   for sv in rke2-server rke2-agent k3s k3s-agent; do systemctl is-active --quiet $sv 2>/dev/null && r2="$sv 실행 중"; done
   sum "  쿠버 배포판: $( { rke2 --version 2>/dev/null || k3s --version 2>/dev/null; } | head -1 | grep . || echo 없음) · 서비스 $r2"
   local fw=꺼짐; systemctl is-active --quiet firewalld 2>/dev/null && fw=켜짐
-  sum "  시간 동기화: $(timedatectl show -p NTPSynchronized --value 2>/dev/null | grep . || echo 알수없음) · 방화벽(firewalld) $fw"
+  local ntp; ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)
+  case "$ntp" in yes) ntp="됨" ;; no) ntp="안 됨 ⚠ (chronyd 확인 — 서버 시계가 틀어지면 인증서 · 로그 시간이 어긋남)" ;; *) ntp="알 수 없음" ;; esac
+  sum "  시간 동기화: $ntp · 방화벽(firewalld) $fw"
   sum "  디스크(사용률 높은 순):"
   df -h -x tmpfs -x devtmpfs -x overlay 2>/dev/null | awk 'NR>1' | sort -k5 -rn | head -5 | sed 's/^/    /' >> "$SUM"
   sum "  NFS 마운트: $(mount | grep -cEi ' type nfs') 개"
-  sum "  미러 설정(registries.yaml): $( [ -f $RCONF/registries.yaml ] && { awk '/^mirrors:/{m=1;next} /^[^ ]/{m=0} m && /^  [^ -][^:]*:/{gsub(/[" :]/,"",$1); r=$1} m && /https?:\/\//{match($0,/https?:\/\/[^" ]+/); printf "%s → %s  ", r, substr($0,RSTART,RLENGTH)}' $RCONF/registries.yaml; echo; } || echo 없음)"
+  sum "  미러 설정(registries.yaml): $( [ -f $RCONF/registries.yaml ] && { awk '/^mirrors:/{m=1;next} /^[^ ]/{m=0} m && /^  [^ -]/ && /:[[:space:]]*$/{r=$1; gsub(/"/,"",r); sub(/:$/,"",r)} m && /https?:\/\//{match($0,/https?:\/\/[^" ]+/); printf "%s → %s  ", r, substr($0,RSTART,RLENGTH)}' $RCONF/registries.yaml; echo; } || echo 없음)"
   if have nvidia-smi; then sum "  GPU       : $(nvidia-smi -L 2>/dev/null | wc -l) 장 · 드라이버 $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"; fi
   if [ -n "$NFS_SERVER" ]; then sum "  스토리지 NFS $NFS_SERVER:2049 → $(tcp "$NFS_SERVER" 2049)"; fi
 }
@@ -249,10 +251,13 @@ if [ "$MODE" = cluster ]; then
     if [ -n "$INGRESS_VIP" ] && [ -n "$DOMAIN" ]; then
       echo "https://$DOMAIN/ (입구 $INGRESS_VIP 로 직접) → $(T curl -sk --resolve "$DOMAIN:443:$INGRESS_VIP" -o /dev/null -w '%{http_code}' "https://$DOMAIN/")"
       [ -n "$L4_VIP" ] && echo "https://$DOMAIN/ (L4 $L4_VIP 로) → $(T curl -sk --resolve "$DOMAIN:443:$L4_VIP" -o /dev/null -w '%{http_code}' "https://$DOMAIN/")"
-      echo "DNS: $DOMAIN → $(getent hosts "$DOMAIN" | awk '{print $1}' | paste -sd' ' -)"
+      dns=$(getent hosts "$DOMAIN" | awk '{print $1}' | paste -sd' ' -)
+      echo "DNS: $DOMAIN → ${dns:-(이 서버에서는 안 풀림 — 사용자 PC 의 hosts · 사내 DNS 로 확인)}"
       echo
       echo "입구 인증서:"
-      echo | T openssl s_client -connect "$INGRESS_VIP:443" -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -subject -issuer -dates 2>/dev/null
+      cert=$(echo | T openssl s_client -connect "$INGRESS_VIP:443" -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -subject -issuer -dates 2>/dev/null)
+      echo "$cert"
+      echo "$cert" | grep -qi "TRAEFIK DEFAULT\|ingress-nginx\|Fake Certificate" && echo "⚠ 기관 인증서가 아니라 입구의 기본 인증서 — 브라우저에 보안 경고가 뜸"
     fi
   } > "$OUT/network/connectivity.txt" 2>&1
 
@@ -301,14 +306,18 @@ if [ "$MODE" = cluster ]; then
     elif [ -n "$crd" ] && echo "$crds" | grep -qiE "$crd"; then sum "  일부  $label — 종류(CRD)만 있고 파드 없음"
     else sum "  없음  $label"; fi
   }
-  detect "네트워크(CNI)"                 "canal|calico|cilium|flannel|kube-ovn|kindnet"
+  if ! echo "$pods_live" | grep -qiE "canal|calico|cilium|flannel|kube-ovn|kindnet" && k get nodes -o jsonpath='{.items[0].metadata.annotations}' | grep -q flannel; then
+    sum "  있음  네트워크(CNI) — k3s 내장 flannel (따로 파드 없이 k3s 안에서 동작)"
+  else detect "네트워크(CNI)" "canal|calico|cilium|flannel|kube-ovn|kindnet"; fi
   detect "CoreDNS"                       "coredns"
   detect "입구 Traefik"                  "traefik"
   detect "입구 ingress-nginx"            "ingress-nginx|nginx-ingress"
   detect "가상 주소 kube-vip"            "kube-vip"
   detect "metrics-server (kubectl top)"  "metrics-server"
   detect "PostgreSQL 운영 장치 CNPG"     "cnpg|cloudnative-pg" "postgresql.cnpg.io"
-  detect "PostgreSQL DB 파드"             "postgres|-pg-|db-general|pg-signal"
+  dbp=$(k get pods -A -l cnpg.io/instanceName --no-headers)
+  if [ -n "$dbp" ]; then sum "  있음  PostgreSQL DB 파드 — $(echo "$dbp" | grep -c ' Running ')/$(echo "$dbp" | grep -c .) Running (CNPG DB, 네임스페이스 $(echo "$dbp" | awk '{print $1}' | sort -u | paste -sd, -))"
+  else detect "PostgreSQL DB 파드" "postgres|db-general|pg-signal"; fi
   detect "Kafka 운영 장치 Strimzi"       "strimzi" "kafka.strimzi.io"
   kb=$(k get pods -A -l strimzi.io/broker-role=true --no-headers)
   if [ -n "$kb" ]; then sum "  있음  Kafka 브로커 — 파드 $(echo "$kb" | grep -c ' Running ')/$(echo "$kb" | grep -c .) Running (Strimzi 브로커 역할)"
@@ -352,7 +361,7 @@ if [ "$MODE" = cluster ]; then
   db=$(k get clusters.postgresql.cnpg.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,인스턴스:.spec.instances,준비:.status.readyInstances,상태:.status.phase,이미지:.spec.imageName')
   if [ -n "$db" ]; then echo "$db" | sed 's/^/  /' >> "$SUM"; else sum "  CNPG DB 없음"; fi
   dbs=$(k get databases.postgresql.cnpg.io -A -o custom-columns='네임스페이스:.metadata.namespace,DB:.spec.name,소유자:.spec.owner,클러스터:.spec.cluster.name,적용:.status.applied')
-  [ -n "$dbs" ] && echo "$dbs" | sed 's/^/  /' >> "$SUM"
+  if [ "$(echo "$dbs" | grep -c .)" -gt 1 ]; then echo "$dbs" | sed 's/^/  /' >> "$SUM"; elif [ -n "$db" ]; then sum "  (Database 자원 없음 — DB 는 Cluster 만들 때 생긴 것만 있음)"; fi
   kf=$(k get kafkas.kafka.strimzi.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,준비:.status.conditions[?(@.type=="Ready")].status,버전:.status.kafkaVersion')
   if [ -n "$kf" ]; then echo "$kf" | sed 's/^/  /' >> "$SUM"; else sum "  Kafka 없음"; fi
   np=$(k get kafkanodepools.kafka.strimzi.io -A -o custom-columns='네임스페이스:.metadata.namespace,이름:.metadata.name,대수:.spec.replicas,역할:.spec.roles')
@@ -361,7 +370,7 @@ if [ "$MODE" = cluster ]; then
   head_ "이미지 창고 ($REGISTRY)"
   if [ -s "$OUT/registry/tags.txt" ]; then
     sum "  이미지 $(wc -l < "$OUT/registry/tags.txt") 종 (전체 목록: registry/tags.txt)"
-    head -40 "$OUT/registry/tags.txt" | sed 's/^/  /' >> "$SUM"
+    awk '{repo=$1; t=$2; gsub(/[\[\]"]/,"",t); n=split(t,a,","); s=""; for(i=1;i<=n&&i<=5;i++) s=s (i>1?", ":"") a[i]; printf "  %-28s 태그 %d개 (%s%s)\n", repo, n, s, (n>5?" …":"")}' "$OUT/registry/tags.txt" | head -40 >> "$SUM"
   else sum "  응답 없음 또는 비어 있음 — $(head -c 200 "$OUT/registry/catalog.json" 2>/dev/null)"; fi
 
   head_ "연결 시험 (이 서버에서)"
@@ -376,7 +385,7 @@ if [ "$MODE" = cluster ]; then
   done
 
   head_ "최근 경고 이벤트 (마지막 25건, 전체: events/warnings.txt)"
-  tail -25 "$OUT/events/warnings.txt" | cut -c1-220 | sed 's/^/  /' >> "$SUM"
+  if grep -q "No resources found" "$OUT/events/warnings.txt" || [ ! -s "$OUT/events/warnings.txt" ]; then sum "  없음"; else tail -25 "$OUT/events/warnings.txt" | cut -c1-220 | sed 's/^/  /' >> "$SUM"; fi
 
   head_ "Secret · 설정값"
   sum "  Secret $(grep -c . "$OUT/config/secrets-list.txt") 개 (이름 · 종류 · 키 이름만: config/secrets-list.txt)"
@@ -390,6 +399,7 @@ if [ "$MODE" = cluster ]; then
     bad_r=$(grep -l -iE '^error|Error:' "$OUT/bundle/rendered/"*.yaml 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/\.yaml$//; s/^k8s_services_//' | paste -sd' ' -)
     sum "  조립 실패: ${bad_r:-없음}"
     sum "  $(wc -l < "$OUT/bundle/excluded.txt") 개 파일은 비밀값 · 키라서 뺌 (bundle/excluded.txt)"
+  elif [ -z "$BUNDLE_DIR" ]; then sum "  (배포 묶음 위치를 정하지 않아 건너뜀)"
   else sum "  $BUNDLE_DIR 없음 — SVN 배포 묶음을 이 위치에 두고 다시 돌리면 함께 모읍니다 (--bundle 로 위치 지정 가능)"; fi
 fi
 
