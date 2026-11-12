@@ -66,14 +66,17 @@ kubectl create ns data-kafka
 kubectl create -f 'https://strimzi.io/install/latest?namespace=data-kafka' -n data-kafka >/dev/null
 waitfor 60 kubectl -n data-kafka rollout status deploy/strimzi-cluster-operator --timeout=5s
 cat <<'EOF' | kubectl apply -f -
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaNodePool
 metadata: { name: dual-role, namespace: data-kafka, labels: { strimzi.io/cluster: signal-kafka } }
-spec: { replicas: 1, roles: [controller, broker], storage: { type: ephemeral } }
+spec:
+  replicas: 1
+  roles: [controller, broker]
+  storage: { type: jbod, volumes: [ { id: 0, type: persistent-claim, size: 1Gi, kraftMetadata: shared } ] }
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: Kafka
-metadata: { name: signal-kafka, namespace: data-kafka, annotations: { strimzi.io/node-pools: enabled, strimzi.io/kraft: enabled } }
+metadata: { name: signal-kafka, namespace: data-kafka }
 spec:
   kafka:
     listeners: [ { name: plain, port: 9092, type: internal, tls: false } ]
