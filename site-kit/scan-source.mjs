@@ -190,7 +190,7 @@ function scanRepo(root) {
       r.envFiles.push({ file: rp, keys: s.split("\n").map(l => l.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/)?.[1]).filter(Boolean) });
     }
     // 배포 관련 파일 사본
-    const inDeployDir = (/(^|\/)(k8s|kubernetes|deploy|deploys|deployment|deployments|helm|charts|kustomize|manifests|gitops|argocd)\//i.test(rp) && /\.(ya?ml|sh|conf|toml|bat|ps1)$/i.test(base))
+    const inDeployDir = (/(^|\/)(k8s|kubernetes|deploy|deploys|deployment|deployments|helm|charts|kustomize|manifests|gitops|argocd)\//i.test(rp) && /\.(ya?ml|conf|toml)$/i.test(base))
       || (/(^|\/)\.(github\/workflows|gitlab|circleci|gitea|woodpecker)\//.test(rp) && /\.ya?ml$/i.test(base));
     const realEnv = /(^|[._-])env$|^\.env/i.test(base) && !/example|sample|template/i.test(base);   // 진짜 비밀값 파일은 사본을 가져오지 않음
     if ((DEPLOY_FILE_RE.test(base) || inDeployDir) && !realEnv && !/\.(key|pem|p12|jks|pfx|keystore|truststore)$/i.test(base)) {
@@ -286,7 +286,8 @@ results.forEach((r, i) => {
   const pick = re => kinds.filter(f => re.test(f));
   say(`    Dockerfile: ${pick(/Dockerfile|\.dockerfile$/i).join(", ") || "없음"}`);
   say(`    docker-compose: ${pick(/compose[^/]*\.ya?ml$/i).join(", ") || "없음"}`);
-  say(`    쿠버 설정(yml · kustomize · helm): ${pick(/(k8s|kubernetes|helm|charts|manifests|kustomiz)/i).length}개`);
+  const kube = pick(/(k8s|kubernetes|helm|charts|manifests|kustomiz|gitops|argocd)/i).filter(f => /\.ya?ml$/i.test(f));
+  say(`    쿠버 설정(yml · kustomize · helm): ${kube.length ? kube.length + "개 — " + kube.slice(0, 8).join(", ") + (kube.length > 8 ? " 외" : "") : "없음"}`);
   say(`    자동 빌드 · 배포 설정(Jenkins · GitLab · GitHub): ${pick(/Jenkinsfile|gitlab-ci|workflows|pipelines/i).join(", ") || "없음"}`);
   say(`    배포 · 실행 스크립트: ${pick(/\.(sh|bat|cmd|ps1)$/i).join(", ") || "없음"}`);
   say(`    서비스 파일(systemd): ${pick(/\.service$/i).join(", ") || "없음"}`);
