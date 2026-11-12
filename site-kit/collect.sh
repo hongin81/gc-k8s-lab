@@ -274,7 +274,7 @@ if [ "$MODE" = cluster ]; then
   rl=${ROLE_LABEL//./\\.}
   head_ "쿠버 · 서버"
   sum "  쿠버 버전: $(k get --raw /version | grep -o '"gitVersion": *"[^"]*"' | cut -d'"' -f4) · 서버 $(k get nodes --no-headers | wc -l) 대"
-  k get nodes -o custom-columns="이름:.metadata.name,역할라벨:.metadata.labels.$rl,IP:.status.addresses[?(@.type==\"InternalIP\")].address,CPU:.status.capacity.cpu,메모리:.status.capacity.memory,GPU:.status.allocatable.nvidia\.com/gpu,kubelet:.status.nodeInfo.kubeletVersion,런타임:.status.nodeInfo.containerRuntimeVersion" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+Ki$/) $i=sprintf("%.0fGi", $i/1048576); print "  "$0}' | column -t >> "$SUM"
+  k get nodes -o custom-columns="이름:.metadata.name,역할라벨:.metadata.labels.$rl,IP:.status.addresses[?(@.type==\"InternalIP\")].address,CPU:.status.capacity.cpu,메모리:.status.capacity.memory,GPU:.status.allocatable.nvidia\.com/gpu,kubelet:.status.nodeInfo.kubeletVersion,런타임:.status.nodeInfo.containerRuntimeVersion" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+Ki$/) $i=sprintf("%.0fGi", $i/1048576); print $0}' | column -t | sed 's/^/  /' >> "$SUM"
   sum ""
   k get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"  OS: "}{.status.nodeInfo.osImage}{" · 커널 "}{.status.nodeInfo.kernelVersion}{" · Ready="}{.status.conditions[?(@.type=="Ready")].status}{" · taint: "}{range .spec.taints[*]}{.key}={.value}:{.effect}{" "}{end}{"\n"}{end}' | sed 's/^/  /' >> "$SUM"
 
