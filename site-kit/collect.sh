@@ -41,6 +41,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# sudo 로 돌리면 /usr/local/bin 이 실행 경로에서 빠지는 서버가 있음 (k3s · kubectl 이 거기 있음)
+export PATH=$PATH:/usr/local/bin:/usr/local/sbin
 # 쿠버 배포판 (RKE2 · k3s) — 설정 파일 위치가 다름
 K8S_DIST=""; for d in rke2 k3s; do if [ -d /etc/rancher/$d ] || [ -d /var/lib/rancher/$d ]; then K8S_DIST=$d; break; fi; done
 RCONF=/etc/rancher/${K8S_DIST:-rke2}; RDATA=/var/lib/rancher/${K8S_DIST:-rke2}

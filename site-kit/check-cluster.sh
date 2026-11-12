@@ -14,6 +14,8 @@ source "$ENV_FILE"
 : "${KAFKA_LABEL:=}" "${SERVICE_NAMESPACES:=}" "${DATA_NAMESPACES:=}" "${OUT_DIR:=/root}"
 
 # RKE2 기본 위치
+# sudo 로 돌리면 /usr/local/bin 이 실행 경로에서 빠지는 서버가 있음 (k3s · kubectl 이 거기 있음)
+export PATH=$PATH:/usr/local/bin:/usr/local/sbin
 for d in rke2 k3s; do
   [ -x /var/lib/rancher/$d/bin/kubectl ] && export PATH=$PATH:/var/lib/rancher/$d/bin
   [ -z "${KUBECONFIG:-}" ] && [ -f /etc/rancher/$d/$d.yaml ] && export KUBECONFIG=/etc/rancher/$d/$d.yaml
